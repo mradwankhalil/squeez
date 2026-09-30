@@ -1,119 +1,86 @@
-# squeez local-fixes promote
+# squeez local-fixes: normal install + overlays
 
-**No owner fix lives in the binary.** The live `squeez.exe` is the stock upstream
-Windows x64 asset: PE subsystem 3 (CONSOLE), byte-identical to the official
-release digest recorded in `installed.json`. No Rust build, cargo, PE patching,
-`squeez setup` or `squeez update`.
+squeez is installed **the normal upstream way**. This folder only carries what
+upstream does not ship yet (the *overlays*), each tied to an upstream issue, and
+a verifier that proves the whole install is healthy.
 
 From `C:/Users/Zephyrus/Documents/ai/squeez-v2-work`:
 
 ```text
-node local-fixes/verify.mjs                                # health; every line must PASS
-node local-fixes/apply.mjs --dry-run [--version vX.Y.Z]    # plan only
-node local-fixes/apply.mjs --apply --version vX.Y.Z        # stage official binary, reinstall owner plugin
-git fetch origin tag vX.Y.Z --no-tags                      # activate reads asset templates from the tag
-node local-fixes/activate.mjs --dry-run --version vX.Y.Z   # plan only
-node local-fixes/activate.mjs --apply --version vX.Y.Z     # swap binary, refresh assets, record, verify
+node local-fixes/verify.mjs            # read-only health check; every line must PASS
+node local-fixes/apply.mjs             # dry-run: current health + the promotion plan
+node local-fixes/apply.mjs --apply     # promote to the latest release and re-apply overlays
 ```
 
-No mode flag means dry-run. Only plain `vX.Y.Z` release tags are accepted (no
-prereleases, bare versions, branches or URLs). `apply` without `--version`
-resolves GitHub's latest stable release; `activate` requires `--version`. Each
-run has an 18-second budget and external commands get the remainder. Requires
-Node >= 22, authenticated `gh` and Windows `curl.exe`. squeez compresses shell
-output, so redirect to a file and read the file.
+Requires Node >= 22, authenticated `gh`, Git Bash, and Python (for the
+instruction-block check). squeez compresses shell output, so redirect to a file
+and read the file.
 
-## What each entrypoint does
+## What `apply.mjs --apply` does
 
-- **apply** resolves release metadata through `gh`. Dry-run prints the plan and
-  returns before any check, download or write. `--apply` runs the protected
-  invariants (abort on the first drift), downloads the asset into memory,
-  requires its size, the published SHA-256 and subsystem 3, writes
-  `staged/squeez-vX.Y.Z.exe` (gitignored), reinstalls the owner plugin
-  byte-for-byte and runs its 9 tests (restoring the previous plugin on failure),
-  then runs the invariants again. It never touches the live binary.
-- **activate** requires the staged file and the tag in this repository, requires
-  the staged bytes to equal the official digest and to be CONSOLE, and reads
-  every release-asset template before changing anything. `--apply` then runs the
-  invariants, moves the live `squeez.exe` aside as
-  `squeez.exe.bak-squeez-activate-<UTC>` and writes the staged bytes in its
-  place. Windows refuses to overwrite a running executable but allows renaming
-  it (measured 2026-09-30), so no retry loop is needed; if the write fails the
-  original is renamed back. It refreshes every `policy.releaseAssets` target from
-  `git show <tag>:<template>` keeping the file's line-ending style, writes
-  `installed.json`, and runs full verification, failing with backup paths if
-  anything is red. A live binary that already equals the staged bytes is left
-  alone.
-- **verify** is read-only. It prints every result, then `N pass / M fail`, and
-  exits 1 on any failure.
+1. `squeez update`: upstream's own updater. It downloads the latest release,
+   checks it against the release's `checksums.sha256`, swaps the running
+   `squeez.exe` by renaming it (Windows allows renaming a running exe, not
+   overwriting it), and runs `squeez setup --host=claude-code`.
+2. `squeez setup --host=claude-code`, `--host=pi`, `--host=gemini`: the safe
+   hosts (`manifest.setupHosts`). They refresh the managed hooks, the buddy and
+   the Pi extension from the new binary.
+3. Re-applies each overlay **only if it drifted**, with a
+   `.bak-squeez-promote-<UTC>` backup next to every changed file.
+4. Re-applies the owner config values, only if drifted.
+5. Runs the full verification and exits 1 on any FAIL.
 
-## What verify checks (29 checks on 2026-09-30)
+It **never** runs bare `squeez setup`, or `setup --host=opencode|codex|copilot`
+(`manifest.neverSetupHosts` says why for each).
 
-| Check | Why |
-|---|---|
-| Binary exists, PE subsystem 3, SHA-256 equals `installed.json` | Official console build (X-17/X-19) |
-| Pi extension and 6 buddy lib files equal `<installed tag>:<template>` | #235 Pi `windowsHide` and #240 buddy sizing live in these files, not the binary |
-| Owner plugin byte-identical; markers `windowsHide: true`, `taskkill /F /T /PID`, `-EncodedCommand`, `export default {` | Hidden windows, #239 WSL supervisor, PowerShell-safe wrapping |
-| Installed plugin tests: 9 pass, 0 fail, 0 skip | Behavioural spec of the plugin helpers |
-| One owner PostCompact, no managed `postcompact.sh`; compact-restore bytes and SessionStart reference | Single quiet delivery path with owner caps |
-| Codex, per `policy.codex.hooksMode`: `off` = no squeez command in `hooks.json` and context-mode plugin `enabled = false`; `owner` = exactly three commands pointing at the user-hook scripts | Owner decision X-74 / X-119 (currently `off`) |
-| Codex user-hook scripts byte-identical to `codex-user-hooks/` | Kept ready for the day Codex hooks return |
-| `wrap_timeout_secs = 540` and `context_window_tokens = 1000000`, single active key, `~/.claude/squeez/config.ini` | Owner config; #219 pin |
-| `auto_compress_md` off in all six host configs | `init --host=<h>` reads `<host>/squeez/config.ini` (X-98, X-119); squeez treats only the exact value `true` as on |
+## Overlays (upstream does not ship these yet)
 
-Protected files are **check-only**: `settings.json`, Codex `hooks.json` and
-`config.toml`, every `config.ini`, and the owner and Codex user-hook scripts.
-Drift aborts `apply` and `activate` before anything is written. Repairing
-drift needs an explicit owner decision; the pipeline never repairs it.
+| Overlay | What | Upstream | Retire when |
+|---|---|---|---|
+| `opencode-plugin` | Owner OpenCode plugin: Windows `-EncodedCommand` wrapping; bounded WSL timeout (`taskkill /F /T`, exit 124) | squeez #244, #239; #242 for OpenCode 2.x | a release's plugin has both, checked by marker |
+| `copilot-hooks` | Copilot hooks under `hooks.<Event>` with forward-slash paths | squeez #243 | setup writes them there itself |
+| `codex-hooks-off` | No squeez hook in Codex; context-mode Codex plugin disabled (owner decision X-74/X-119) | openai/codex#49164 | a stable Codex with #49164 **and** an owner decision |
 
-## Fix set
+Owner config (not patches): `wrap_timeout_secs = 540`, `context_window_tokens =
+1000000`, and `auto_compress_md = false` in all six host configs
+(`manifest.configWhy`).
 
-`manifest.json` is the ledger (15 entries); `policy.json` holds the protected
-expectations and the release-asset list.
+## What `verify.mjs` checks (25 checks on 2026-09-30)
 
-| Fix id | Lives in | Upstream status |
-|---|---|---|
-| `windows-hide` | owner plugin | #235 shipped 1.48.6; owner plugin still preserved because setup replaces it |
-| `wsl-supervisor` | owner plugin | #239 OPEN; carried |
-| `powershell-encoded-wrap` | owner plugin | owner-only |
-| `plugin-source` | owner plugin | #242 OPEN (OpenCode 2.x dual export; not installed) |
-| `compact-restore` | owner hook | #232/#233 shipped; owner caps 8,000 chars / 2 MB kept |
-| `postcompact-quiet` | owner hook | #236 shipped; ownership still verified |
-| `codex-hooks-off` | Codex registration | owner decision until a stable Codex >= 0.160 ships openai/codex#49164 |
-| `codex-user-session-start`, `-pretooluse`, `-posttooluse` | Codex user hooks | owner copies |
-| `wrap-timeout` | `~/.claude/squeez/config.ini` | owner 540 s |
-| `context-window-pin` | `~/.claude/squeez/config.ini` | owner #219 pin |
-| `auto-compress-md` | six host configs | X-28 / X-98 / X-119 |
-| `release-assets` | Pi extension + buddy lib | #235 Pi, #240 buddy |
-| `console-subsystem` | binary | never GUI-patch (X-17, X-19) |
+Binary is CONSOLE (PE subsystem 3) and its SHA-256 equals the official release
+checksum; `squeez doctor` has no `[FAIL]`; the Pi extension and 6 buddy files
+equal the installed tag's templates; each overlay is in place (the plugin is
+byte-identical, has its markers, and passes its 9 tests); every config value
+holds; and the four canonical instruction blocks are IN SYNC.
+
+## Adding an overlay
+
+Only when upstream is missing something and an issue or PR exists for it:
+file it first, then add an entry to `manifest.overlays` with `id`, `what`,
+`target`, `upstream[]` (URL + state) and `retireWhen`, implement its check in
+`verificationChecks` and its repair in `reapplyOverlay` (`pipeline.mjs`), and
+add a fixture test. The manifest test refuses an overlay without an upstream
+URL or a retire condition.
+
+## Retiring an overlay
+
+When its upstream fix ships in a release, run `apply.mjs --apply`, confirm the
+overlay's check passes with nothing re-applied, then delete the entry, its
+check, and its repair in one commit.
 
 ## Git: branch `local/fixes-ledger`
 
-This folder is committed on `local/fixes-ledger` of
-`github.com/mradwankhalil/squeez` (remote `fork`), branched from `main` at
-v1.48.10. The working copy here stays untracked on whatever branch this checkout
-has out (normally `feat/opencode-v2-dual-export`).
-
-**Never `git checkout local/fixes-ledger` in this checkout.** Switching back to
-any branch that does not track `local-fixes/` would delete this folder from
-disk. Snapshot through a temporary worktree instead:
+Committed on `local/fixes-ledger` of `github.com/mradwankhalil/squeez` (remote
+`fork`). The working copy stays untracked in the `feat/opencode-v2-dual-export`
+checkout. **Never `git checkout local/fixes-ledger` here**: switching back would
+delete this folder. Snapshot through a temporary worktree:
 
 ```text
 W=$TEMP/sq-ledger && git worktree add "$W" local/fixes-ledger
-cp -r local-fixes/. "$W/local-fixes/"        # staged/ stays ignored
-git -C "$W" add local-fixes && git -C "$W" commit -m "ledger: <what changed>"
+rm -rf "$W/local-fixes" && cp -r local-fixes "$W/local-fixes"
+git -C "$W" add -A local-fixes && git -C "$W" commit -m "ledger: <what changed>"
 git -C "$W" push fork local/fixes-ledger && git worktree remove "$W"
 ```
 
-## Rollback
-
-Every overwritten file gets an adjacent backup first: `.bak-squeez-promote-<UTC>`
-for the plugin, staged file and release assets, `.bak-squeez-activate-<UTC>` for
-the binary. Identical files are not rewritten. There is no transaction across
-files: a late failure keeps the backups and stops. Restore a binary by renaming
-the backup back (rename works while the current one runs). Verify the PE
-subsystem of any backup before using it; its name is not proof. Never delete
-backups automatically.
-
-Tests: `node --test local-fixes/pipeline.test.mjs` (temporary fixtures only).
-Contract: `CONTRACT.md`. Companion skill: `mk-squeez-promote`.
+Tests: `node --test local-fixes/pipeline.test.mjs`. Contract: `CONTRACT.md`.
+Skill: `mk-squeez-promote`.

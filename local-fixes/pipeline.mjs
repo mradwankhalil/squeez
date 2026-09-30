@@ -1,415 +1,311 @@
-import { constants, copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
-import { execFileSync } from 'node:child_process';
+// squeez promote pipeline: normal upstream install + a short list of overlays upstream does not ship yet.
+//
+//   node local-fixes/verify.mjs            read-only health check (N pass / M fail)
+//   node local-fixes/apply.mjs             dry-run: what a promotion would do
+//   node local-fixes/apply.mjs --apply     squeez update -> setup (safe hosts only) -> re-apply overlays -> verify
+//
+// Upstream does the install: `squeez update` downloads the release, checks it against the release's
+// checksums.sha256, swaps the running squeez.exe by renaming it, and refreshes the Claude Code hooks.
+// This pipeline only adds what upstream lacks, each overlay tied to an upstream issue (manifest.json).
+import { copyFileSync, existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-export class PromoteError extends Error {
-  constructor(message) { super(message); this.name = 'PromoteError'; }
-}
-function requireThat(ok, message) { if (!ok) throw new PromoteError(message); }
+export class PromoteError extends Error { constructor(message) { super(message); this.name = 'PromoteError'; } }
+const requireThat = (ok, message) => { if (!ok) throw new PromoteError(message); };
 export const root = dirname(fileURLToPath(import.meta.url));
-const tagPattern = /^v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/;
-export const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
-const hash = sha256;
-const stampNow = () => new Date().toISOString().replace(/[-:.]/g, '');
+export const repoRoot = resolve(root, '..');
+const TAG = /^v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/;
+const stamp = () => new Date().toISOString().replace(/[-:.]/g, '');
+export const SAFE_SETUP_HOSTS = ['claude-code', 'pi', 'gemini'];
+
+// ---------- pure helpers (unit-tested) ----------
 
 export function parseArgs(args) {
   let mode = null;
-  let version = null;
-  for (let i = 0; i < args.length; i++) {
-    switch (args[i]) {
-      case '--apply': case '--dry-run':
-        requireThat(mode === null, 'choose --apply or --dry-run once');
-        mode = args[i];
-        break;
-      case '--version':
-        requireThat(version === null && tagPattern.test(args[i + 1] ?? ''), '--version requires one plain vX.Y.Z tag');
-        version = args[++i];
-        break;
-      default: throw new PromoteError('unknown argument; use [--dry-run | --apply] [--version vX.Y.Z]');
-    }
+  for (const a of args) {
+    requireThat(a === '--apply' || a === '--dry-run', 'usage: apply.mjs [--dry-run | --apply]  (squeez update always targets the latest release)');
+    requireThat(mode === null, 'choose --apply or --dry-run once');
+    mode = a;
   }
-  return { apply: mode === '--apply', version };
+  return { apply: mode === '--apply' };
 }
 
 export function readSubsystem(bytes) {
   requireThat(bytes.length >= 64 && bytes.toString('ascii', 0, 2) === 'MZ', 'missing DOS MZ header');
   const pe = bytes.readUInt32LE(60);
-  requireThat(pe >= 64 && pe + 24 <= bytes.length, 'PE header outside file');
-  requireThat(bytes.toString('ascii', pe, pe + 4) === 'PE\0\0', 'missing PE signature');
-  const optional = pe + 24;
+  requireThat(pe >= 64 && pe + 24 <= bytes.length && bytes.toString('ascii', pe, pe + 4) === 'PE\0\0', 'missing PE signature');
   const size = bytes.readUInt16LE(pe + 20);
-  requireThat(size >= 70 && optional + size <= bytes.length, 'truncated optional header');
-  requireThat([0x10b, 0x20b].includes(bytes.readUInt16LE(optional)), 'unsupported optional-header magic');
-  return bytes.readUInt16LE(optional + 68);
+  requireThat(size >= 70 && pe + 24 + size <= bytes.length, 'truncated optional header');
+  requireThat([0x10b, 0x20b].includes(bytes.readUInt16LE(pe + 24)), 'unsupported optional-header magic');
+  return bytes.readUInt16LE(pe + 24 + 68);
 }
-export function requireConsole(bytes, expected) {
-  requireThat(expected === 3 && readSubsystem(bytes) === expected, 'PE subsystem must equal 3 (CONSOLE)');
+
+// `squeez 1.48.10` -> v1.48.10
+export function versionTag(versionOutput) {
+  const m = String(versionOutput).match(/(\d+\.\d+\.\d+)/);
+  return m ? `v${m[1]}` : null;
+}
+
+// checksums.sha256 lines: "<hex>  <asset>" (optionally "*<asset>")
+export function findChecksum(text, asset) {
+  for (const line of String(text).split(/\r?\n/)) {
+    const m = line.trim().match(/^([a-f0-9]{64})\s+\*?(.+)$/i);
+    if (m && m[2].trim() === asset) return m[1].toLowerCase();
+  }
+  return null;
+}
+
+// Mirrors squeez's parser (src/config.rs Config::from_str): full-line '#' comments are skipped, the line
+// splits at the first '=', and a boolean is on only for the exact value "true" (so `false  # note` is off).
+function activeValues(text, key) {
+  const values = [];
+  let section = '';
+  text.split(/\r?\n/).forEach((line, index) => {
+    const t = line.trim();
+    if (!t || t.startsWith('#') || t.startsWith(';')) return;
+    if (t.startsWith('[')) { section = t; return; }
+    const at = t.indexOf('=');
+    if (at > 0 && t.slice(0, at).trim() === key) values.push({ value: t.slice(at + 1).trim(), section, index });
+  });
+  return values;
+}
+export function configValue(text, key) {
+  const v = activeValues(text, key);
+  return v.length === 1 && v[0].section === '' ? v[0].value : null;
+}
+export function configSatisfies(text, key, expected) {
+  const v = configValue(text, key);
+  if (v === null) return false;
+  if (expected === 'false') return v !== 'true';
+  return v.replace(/\s+#.*$/, '') === expected;
+}
+// Set one top-level key; refuses duplicates or a sectioned key rather than guessing.
+export function setConfigValue(text, key, value) {
+  const eol = text.includes('\r\n') ? '\r\n' : '\n';
+  const lines = text.split(/\r?\n/);
+  const v = activeValues(text, key);
+  requireThat(v.length <= 1 && (v.length === 0 || v[0].section === ''), `config key ${key} is duplicated or sectioned; fix by hand`);
+  if (v.length === 1) lines[v[0].index] = `${key} = ${value}`;
+  else {
+    const firstSection = lines.findIndex(l => l.trim().startsWith('['));
+    const at = firstSection < 0 ? (lines[lines.length - 1] === '' ? lines.length - 1 : lines.length) : firstSection;
+    lines.splice(at, 0, `${key} = ${value}`);
+  }
+  return lines.join(eol);
 }
 
 export function commandEntries(value) {
   if (!value || typeof value !== 'object') return [];
   return [...(value.type === 'command' ? [value] : []), ...Object.values(value).flatMap(commandEntries)];
 }
-export function invokesHook(command, expected) {
-  if (typeof command !== 'string') return false;
-  // Accept direct bash invocations, not echoed filenames, comments or shell chains.
-  const tokens = command.trim().match(/"[^"]*"|'[^']*'|[^\s]+/g) ?? [];
-  const unquote = s => s.replace(/^(["'])(.*)\1$/, '$2').replace(/\\/g, '/');
-  const parts = tokens.map(unquote);
-  if (parts[0] === '&') parts.shift();
-  if (parts.length !== 2 || !/(?:^|\/)bash(?:\.exe)?$/i.test(parts[0])) return false;
-  const home = 'C:/Users/Zephyrus';
-  const path = parts[1].replace(/^(?:~|\$HOME|\$\{HOME\}|%USERPROFILE%)(?=\/)/, home).replace(/^\/c\//i, 'C:/');
-  return path.toLowerCase() === expected.replace(/\\/g, '/').toLowerCase();
-}
-export function postCompactOkay(settings, owner) {
-  const groups = settings.hooks?.PostCompact;
-  const commands = commandEntries(groups);
-  return Array.isArray(groups) && groups.length === 1 && Array.isArray(groups[0]?.hooks)
-    && groups[0].hooks.length === 1 && commands.length === 1 && invokesHook(commands[0].command, owner)
-    && !commandEntries(settings.hooks).some(entry => /squeez\/hooks\/postcompact\.sh/i.test(String(entry.command).replace(/\\/g, '/')));
-}
-export function codexOwnership(settings, expected) {
-  return commandEntries(settings).length === 3 && Object.entries(expected).every(([event, path]) => {
-    const entries = commandEntries(settings.hooks?.[event]);
-    return entries.length === 1 && invokesHook(entries[0].command, path);
-  });
-}
-// Owner decision (X-74 2026-09-19, X-119 2026-09-30): no squeez command may be registered with Codex on
-// Windows until a stable Codex ships openai/codex#49164. An absent hooks.json is the canonical state;
-// unrelated non-squeez hooks are tolerated rather than counted.
 export function codexSqueezHooksAbsent(hooksJsonText) {
   if (hooksJsonText === null) return true;
-  let parsed;
-  try { parsed = JSON.parse(hooksJsonText); } catch { return false; }
-  return !commandEntries(parsed).some(entry => /squeez/i.test(String(entry.command)));
+  try { return !commandEntries(JSON.parse(hooksJsonText)).some(e => /squeez/i.test(String(e.command))); }
+  catch { return false; }
 }
 export function tomlSectionValues(text, header, key) {
   const values = [];
   let inSection = false;
   for (const line of text.split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (trimmed.startsWith('[')) { inSection = trimmed === header; continue; }
-    if (!inSection || !trimmed || trimmed.startsWith('#')) continue;
-    const match = trimmed.match(/^([A-Za-z0-9_.-]+)\s*=\s*(.*?)\s*(?:#.*)?$/);
-    if (match?.[1] === key) values.push(match[2]);
+    const t = line.trim();
+    if (t.startsWith('[')) { inSection = t === header; continue; }
+    if (!inSection || !t || t.startsWith('#')) continue;
+    const m = t.match(/^([A-Za-z0-9_.-]+)\s*=\s*(.*?)\s*(?:#.*)?$/);
+    if (m?.[1] === key) values.push(m[2]);
   }
   return values;
 }
 export function codexContextModeDisabled(configTomlText) {
-  const values = tomlSectionValues(configTomlText, '[plugins."context-mode@context-mode"]', 'enabled');
-  return values.length === 1 && values[0] === 'false';
+  const v = tomlSectionValues(configTomlText, '[plugins."context-mode@context-mode"]', 'enabled');
+  return v.length === 1 && v[0] === 'false';
 }
-export function configEquals(text, key, expected) {
-  const values = [];
-  let section = '';
-  for (const line of text.split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (!trimmed || /^[#;]/.test(trimmed)) continue;
-    if (trimmed.startsWith('[')) { section = trimmed; continue; }
-    const match = trimmed.match(/^([^=\s]+)\s*=\s*(.*?)\s*$/);
-    if (match?.[1] === key) values.push({ value: match[2], section });
-  }
-  return values.length === 1 && values[0].section === '' && values[0].value === expected;
+
+// Copilot CLI reads hooks only from settings.hooks.<Event> and ignores unknown top-level keys; squeez 1.48.10
+// registers top-level entries with unquoted backslash paths (upstream #243). This puts exactly one squeez
+// entry per event under `hooks`, in the command shape squeez uses for Claude Code, and keeps other hooks.
+export const COPILOT_SCRIPTS = [
+  { event: 'SessionStart', matcher: null, script: 'copilot-session-start.sh' },
+  { event: 'PreToolUse', matcher: 'Bash', script: 'copilot-pretooluse.sh' },
+  { event: 'PostToolUse', matcher: null, script: 'copilot-posttooluse.sh' },
+];
+const isSqueezCopilot = entry => commandEntries(entry).some(e => /copilot-(session-start|pretooluse|posttooluse)\.sh/.test(String(e.command)) && /squeez/i.test(String(e.command)));
+export function copilotCommand(home, script) {
+  return `bash "${home.replace(/\\/g, '/')}/.copilot/squeez/hooks/${script}"`;
 }
-// Mirrors squeez's own parser (src/config.rs Config::from_str): full-line '#' comments are skipped, the
-// line splits at the first '=', and a boolean is on only for the exact value "true". An inline comment
-// after `false` is therefore still off, so a raw string comparison would report a false alarm.
-export function configBoolOff(text, key) {
-  const values = [];
-  let section = '';
-  for (const line of text.split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith('#')) continue;
-    if (trimmed.startsWith('[')) { section = trimmed; continue; }
-    const at = trimmed.indexOf('=');
-    if (at > 0 && trimmed.slice(0, at).trim() === key) values.push({ value: trimmed.slice(at + 1).trim(), section });
+export function normalizeCopilotSettings(settings, home) {
+  const out = structuredClone(settings);
+  for (const { event } of COPILOT_SCRIPTS) {
+    if (Array.isArray(out[event])) {
+      const kept = out[event].filter(g => !isSqueezCopilot(g));
+      if (kept.length) out[event] = kept; else delete out[event];
+    }
   }
-  return values.length === 1 && values[0].section === '' && values[0].value !== 'true';
+  out.hooks = out.hooks && typeof out.hooks === 'object' ? out.hooks : {};
+  for (const { event, matcher, script } of COPILOT_SCRIPTS) {
+    const others = (out.hooks[event] ?? []).filter(g => !isSqueezCopilot(g));
+    out.hooks[event] = [...others, { ...(matcher ? { matcher } : {}), hooks: [{ type: 'command', command: copilotCommand(home, script) }] }];
+  }
+  return out;
+}
+export function copilotSettingsOk(settings) {
+  if (COPILOT_SCRIPTS.some(({ event }) => Array.isArray(settings[event]) && settings[event].some(isSqueezCopilot))) return false;
+  return COPILOT_SCRIPTS.every(({ event, script }) => {
+    const cmds = commandEntries(settings.hooks?.[event] ?? []).map(e => String(e.command)).filter(c => c.includes(script));
+    return cmds.length === 1 && !cmds[0].includes('\\') && cmds[0].includes(`/.copilot/squeez/hooks/${script}`);
+  });
+}
+
+export function doctorFailures(output) {
+  return String(output).split(/\r?\n/).filter(l => /^\s*\[FAIL\]/.test(l)).map(l => l.trim());
 }
 export const normalizeEol = bytes => Buffer.from(bytes).toString('utf8').replace(/\r\n/g, '\n');
-export function assetMatchesTemplate(installed, template) { return normalizeEol(installed) === normalizeEol(template); }
-// Keep the installed file's line-ending style so an asset refresh changes content, not EOL noise.
-export function withEolOf(existingText, template) {
-  const text = normalizeEol(template);
-  return Buffer.from(existingText?.includes('\r\n') ? text.replace(/\n/g, '\r\n') : text, 'utf8');
-}
 
-function readJson(path) {
-  try { return JSON.parse(readFileSync(path, 'utf8')); }
-  catch { throw new PromoteError(`cannot read valid JSON: ${path}`); }
-}
-const readIfPresent = path => (existsSync(path) ? readFileSync(path, 'utf8') : null);
+// ---------- context and side-effecting steps ----------
+
 export function loadContext() {
-  const manifest = readJson(join(root, 'manifest.json'));
-  const policy = readJson(join(root, 'policy.json'));
-  const installed = readJson(join(root, 'installed.json'));
-  requireThat(manifest.tool === 'squeez' && manifest.subsystemMustEqual === 3, 'invalid squeez manifest');
-  requireThat(manifest.upstream.repo === 'claudioemmanuel/squeez', 'unexpected upstream repository');
-  requireThat(tagPattern.test(installed.tag ?? '') && /^[a-f0-9]{64}$/.test(installed.sha256 ?? ''), 'installed.json needs a plain tag and a SHA-256');
-  requireThat(['off', 'owner'].includes(policy.codex?.hooksMode), 'policy.codex.hooksMode must be off or owner');
-  const ids = new Set();
-  for (const fix of manifest.localFixes) {
-    for (const field of ['id', 'what', 'targetPath', 'sourceOfTruth', 'marker', 'verify', 'upstreamStatus']) {
-      requireThat(typeof fix[field] === 'string' && fix[field].length > 0, `invalid manifest field ${field}`);
-    }
-    requireThat(!ids.has(fix.id), 'duplicate fix id'); ids.add(fix.id);
-    requireThat(['plugin', 'hook', 'registration', 'config', 'binary-property', 'release-asset'].includes(fix.kind), 'invalid fix kind');
-    requireThat(typeof fix.reapplyAfterUpdate === 'boolean' && Array.isArray(fix.clobberedBy), 'invalid fix policy');
-    requireThat(fix.sourceOfTruth.startsWith('local-fixes/') && !fix.sourceOfTruth.split('/').includes('..'), 'source of truth must be inside local-fixes');
-    requireThat(existsSync(resolve(root, '..', fix.sourceOfTruth)), `missing source of truth: ${fix.id}`);
-  }
-  const fix = id => {
-    const found = manifest.localFixes.find(item => item.id === id);
-    requireThat(found, `missing manifest fix ${id}`);
-    return found;
-  };
-  return { root, repoRoot: resolve(root, '..'), manifest, policy, installed, fix };
+  const manifest = JSON.parse(readFileSync(join(root, 'manifest.json'), 'utf8'));
+  requireThat(manifest.tool === 'squeez' && manifest.upstream?.repo === 'claudioemmanuel/squeez', 'invalid manifest');
+  for (const o of manifest.overlays) requireThat(o.id && o.what && Array.isArray(o.upstream) && o.upstream.length && o.retireWhen, `overlay ${o.id ?? '?'} lacks id/what/upstream/retireWhen`);
+  return { manifest, home: process.env.USERPROFILE ?? process.env.HOME };
 }
 
-export class Budget {
-  constructor() { this.deadline = Date.now() + 18000; }
-  remaining(maximum = 18000) {
-    const ms = Math.min(maximum, this.deadline - Date.now());
-    requireThat(ms > 0, '18-second command budget exhausted; rerun explicitly');
-    return ms;
-  }
+export function run(file, args, timeout = 120000) {
+  const r = spawnSync(file, args, { encoding: 'utf8', windowsHide: true, timeout, stdio: ['ignore', 'pipe', 'pipe'] });
+  return { code: r.status ?? -1, out: `${r.stdout ?? ''}${r.stderr ?? ''}`, error: r.error };
 }
-function run(command, args, budget, maxBuffer = 1024 * 1024) {
-  try {
-    return execFileSync(command, args, { timeout: budget.remaining(), maxBuffer, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
-  } catch {
-    // Never include captured stderr, command payloads, environment, or JSON contents.
-    throw new PromoteError(`${command} failed or exceeded bounded deadline (child output withheld)`);
-  }
+const git = (args, timeout = 30000) => run('git', ['-C', repoRoot, ...args], timeout);
+export function tagTemplate(tag, path) {
+  requireThat(TAG.test(tag) && !path.split('/').includes('..'), 'unsafe tag or template');
+  const r = git(['show', `${tag}:${path}`]);
+  requireThat(r.code === 0, `tag ${tag} missing locally; run: git -C ${repoRoot} fetch origin tag ${tag} --no-tags`);
+  return r.out;
 }
-export function runPluginTests(path, budget) {
-  const output = run(process.execPath, ['--test', '--test-reporter=tap', path], budget).toString('utf8');
-  const number = label => Number(output.match(new RegExp(`^# ${label} (\\d+)\\s*$`, 'm'))?.[1]);
-  requireThat(number('tests') === 9 && number('pass') === 9 && number('fail') === 0 && number('skipped') === 0 && number('cancelled') === 0, 'installed plugin suite must report exactly 9 passing tests, no skips');
+function officialChecksum(repo, tag, asset) {
+  const r = run('gh', ['release', 'download', tag, '--repo', repo, '--pattern', 'checksums.sha256', '--output', '-'], 60000);
+  if (r.code !== 0) return null;
+  return findChecksum(r.out, asset);
 }
-export function requireTag(repoRoot, tag, budget) {
-  requireThat(tagPattern.test(tag), 'unsafe tag');
-  try { run('git', ['-C', repoRoot, 'rev-parse', '--verify', '--quiet', `${tag}^{commit}`], budget); }
-  catch { throw new PromoteError(`tag ${tag} missing locally; run: git -C ${repoRoot} fetch origin tag ${tag} --no-tags`); }
+const sha256File = path => createHash('sha256').update(readFileSync(path)).digest('hex');
+
+function backup(path) {
+  const b = `${path}.bak-squeez-promote-${stamp()}`;
+  copyFileSync(path, b);
+  return b;
 }
-export function releaseTemplate(repoRoot, tag, template, budget) {
-  requireThat(tagPattern.test(tag) && !template.split('/').includes('..'), 'unsafe template reference');
-  return run('git', ['-C', repoRoot, 'show', `${tag}:${template}`], budget, 8 * 1024 * 1024);
+function writeAtomic(path, text) {
+  const tmp = `${path}.tmp-squeez-promote`;
+  writeFileSync(tmp, text);
+  renameSync(tmp, path);
 }
 
-export function invariantChecks(ctx) {
-  const { policy, fix } = ctx;
-  const settings = () => readJson(policy.settingsPath);
-  const ownerHook = (id, event) => {
-    const item = fix(id);
-    const bytes = readFileSync(item.targetPath);
-    return bytes.equals(readFileSync(resolve(ctx.repoRoot, item.sourceOfTruth))) && bytes.toString().includes(item.marker)
-      && commandEntries(settings().hooks?.[event]).some(entry => invokesHook(entry.command, item.targetPath));
-  };
-  const ownerScript = id => {
-    const item = fix(id);
-    const bytes = readFileSync(item.targetPath);
-    return bytes.equals(readFileSync(resolve(ctx.repoRoot, item.sourceOfTruth))) && bytes.toString().includes(item.marker);
-  };
-  const codex = policy.codex;
-  const codexChecks = codex.hooksMode === 'off'
-    ? [
-      ['Codex: no squeez hook registered (owner decision: hooks OFF on Windows)', () => codexSqueezHooksAbsent(readIfPresent(codex.hooksPath))],
-      ['Codex: context-mode plugin enabled = false', () => codexContextModeDisabled(readFileSync(codex.configPath, 'utf8'))],
-    ]
-    : [
-      ['Codex: exactly 3 command entries', () => commandEntries(readJson(codex.hooksPath)).length === 3],
-      ['Codex: all 3 events reference existing user-hooks scripts', () => codexOwnership(readJson(codex.hooksPath), codex.ownerHooks) && Object.values(codex.ownerHooks).every(path => existsSync(path) && lstatSync(path).isFile())],
-    ];
-  return [
-    ['PostCompact: exactly one owner command; no managed postcompact.sh', () => postCompactOkay(settings(), fix('postcompact-quiet').targetPath)],
-    ['compact-restore: owner bytes, marker and SessionStart reference', () => ownerHook('compact-restore', 'SessionStart')],
-    ['postcompact-quiet: owner bytes, marker and settings reference', () => ownerHook('postcompact-quiet', 'PostCompact')],
-    ...codexChecks,
-    ...['codex-user-session-start', 'codex-user-pretooluse', 'codex-user-posttooluse'].map(id => [`${id}: owner script bytes and marker`, () => ownerScript(id)]),
-    ...Object.entries(policy.config).map(([key, value]) => [
-      `config: ${key} = ${value} (single active key, ${policy.claudeConfigPath.split('/').slice(-3).join('/')})`,
-      () => configEquals(readFileSync(policy.claudeConfigPath, 'utf8'), key, value),
-    ]),
-    ...policy.autoCompressOff.map(path => [
-      `auto_compress_md off (squeez semantics): ${path.replace(/^C:\/Users\/Zephyrus\//, '~/')}`,
-      () => configBoolOff(readFileSync(path, 'utf8'), 'auto_compress_md'),
-    ]),
+// Each check: [label, fn] where fn returns true (PASS), false (FAIL), or 'skip:<reason>'.
+export function verificationChecks(ctx) {
+  const { manifest: m, home } = ctx;
+  const bin = m.binary;
+  const tag = () => versionTag(run(bin, ['--version'], 20000).out);
+  const checks = [
+    ['binary exists and is PE subsystem 3 (CONSOLE)', () => existsSync(bin) && readSubsystem(readFileSync(bin)) === 3],
+    ['binary SHA-256 equals the official release checksum', () => {
+      const t = tag(); if (!t) return false;
+      const expected = officialChecksum(m.upstream.repo, t, m.upstream.asset);
+      return expected === null ? 'skip:could not fetch checksums.sha256 (offline or gh not authenticated)' : expected === sha256File(bin);
+    }],
+    ['squeez doctor: no [FAIL] lines', () => { const r = run(bin, ['doctor'], 60000); return doctorFailures(r.out).length === 0 && r.code === 0; }],
+    ...m.releaseAssets.map(a => [`${a.target.replace(home.replace(/\\/g, '/'), '~')} equals <installed tag>:${a.template}`,
+      () => existsSync(a.target) && normalizeEol(readFileSync(a.target)) === normalizeEol(tagTemplate(tag(), a.template))]),
   ];
-}
-export function pluginChecks(ctx) {
-  const { manifest, repoRoot, fix } = ctx;
-  const plugin = fix('plugin-source');
-  return [
-    ['installed plugin byte-identical to source of truth', () => readFileSync(plugin.targetPath).equals(readFileSync(resolve(repoRoot, plugin.sourceOfTruth)))],
-    ['all plugin manifest markers present', () => manifest.localFixes.filter(item => item.kind === 'plugin').every(item => readFileSync(item.targetPath, 'utf8').includes(item.marker))],
-  ];
-}
-export function releaseChecks(ctx, budget) {
-  const { manifest, policy, installed, repoRoot } = ctx;
-  return [
-    [`installed binary SHA-256 = official ${installed.tag} asset recorded in installed.json`, () => sha256(readFileSync(manifest.installBinary)) === installed.sha256],
-    ...policy.releaseAssets.map(asset => [
-      `release asset matches ${installed.tag}:${asset.template}`,
-      () => assetMatchesTemplate(readFileSync(asset.target), releaseTemplate(repoRoot, installed.tag, asset.template, budget)),
-    ]),
-  ];
-}
-export function verificationChecks(ctx, budget) {
-  const { manifest } = ctx;
-  return [
-    ['installed binary exists', () => existsSync(manifest.installBinary) && lstatSync(manifest.installBinary).isFile()],
-    ['installed binary PE subsystem = 3 (CONSOLE)', () => { requireConsole(readFileSync(manifest.installBinary), manifest.subsystemMustEqual); return true; }],
-    ...releaseChecks(ctx, budget),
-    ...pluginChecks(ctx),
-    ['installed plugin tests: 9 pass, 0 fail, 0 skip', () => { runPluginTests(manifest.pluginTests, budget); return true; }],
-    ...invariantChecks(ctx),
-  ];
-}
-export function checkAll(checks, { failFast = false, log = console.log } = {}) {
-  let pass = 0;
-  let fail = 0;
-  for (const [label, check] of checks) {
-    let okay = false;
-    try { okay = check() === true; } catch { /* Per-check label is safe; source contents are not. */ }
-    if (okay) { pass++; log(`PASS ${label}`); }
-    else {
-      fail++; log(`FAIL ${label}`);
-      if (failFast) throw new PromoteError(`aborted at ${label}; protected files are check-only`);
+  for (const o of m.overlays) {
+    if (o.id === 'opencode-plugin') {
+      checks.push([`overlay opencode-plugin: installed plugin byte-identical to ${o.source}`, () => existsSync(o.target) && readFileSync(o.target).equals(readFileSync(resolve(repoRoot, o.source)))]);
+      checks.push(['overlay opencode-plugin: markers ' + o.markers.join(' | '), () => o.markers.every(k => readFileSync(o.target, 'utf8').includes(k))]);
+      checks.push(['overlay opencode-plugin: installed plugin tests 9 pass / 0 fail', () => pluginTestsPass(o.tests)]);
+    } else if (o.id === 'copilot-hooks') {
+      checks.push(['overlay copilot-hooks: squeez hooks under hooks.<Event>, forward-slash paths, no top-level keys', () => !existsSync(o.target) || copilotSettingsOk(JSON.parse(readFileSync(o.target, 'utf8')))]);
+    } else if (o.id === 'codex-hooks-off') {
+      checks.push(['overlay codex-hooks-off: no squeez command registered in ~/.codex/hooks.json', () => codexSqueezHooksAbsent(existsSync(o.target) ? readFileSync(o.target, 'utf8') : null)]);
+      checks.push(['overlay codex-hooks-off: context-mode Codex plugin enabled = false', () => codexContextModeDisabled(readFileSync(o.codexConfig, 'utf8'))]);
     }
   }
-  return { pass, fail };
+  for (const [file, keys] of Object.entries(m.config)) {
+    for (const [key, expected] of Object.entries(keys)) {
+      checks.push([`config ${file.replace(home.replace(/\\/g, '/'), '~')}: ${key} = ${expected}`, () => existsSync(file) ? configSatisfies(readFileSync(file, 'utf8'), key, expected) : 'skip:host config absent']);
+    }
+  }
+  checks.push([`instruction blocks in sync: ${m.instructionBlocks.join(', ')}`, () => m.instructionBlocks.every(b => {
+    const r = run('python', [m.syncBlockTool, b, '--check'], 60000);
+    return r.code === 0 && !/DRIFT|MISSING|ABSENT/i.test(r.out) && /IN SYNC/.test(r.out);
+  })]);
+  return checks;
 }
 
-export function selectRelease(metadata, upstream, requested) {
-  const tag = metadata.tag_name;
-  requireThat(typeof tag === 'string' && tagPattern.test(tag), 'release tag must be plain vX.Y.Z');
-  requireThat(!metadata.draft && !metadata.prerelease && (!requested || tag === requested), 'release is draft/prerelease or does not match requested tag');
-  const assets = metadata.assets?.filter(asset => asset.name === upstream.asset) ?? [];
-  requireThat(assets.length === 1, 'release must contain exactly one expected Windows executable');
-  const asset = assets[0];
-  requireThat(asset.browser_download_url === `https://github.com/${upstream.repo}/releases/download/${tag}/${upstream.asset}`, 'unexpected release asset URL');
-  requireThat(Number.isSafeInteger(asset.size) && asset.size > 0 && asset.size <= 64 * 1024 * 1024, 'invalid release asset size');
-  return { tag, url: asset.browser_download_url, size: asset.size, digest: asset.digest ?? null };
-}
-export function resolveRelease(upstream, requested, budget) {
-  const endpoint = requested ? `tags/${requested}` : 'latest';
-  const bytes = run('gh', ['api', `repos/${upstream.repo}/releases/${endpoint}`], budget);
-  let metadata;
-  try { metadata = JSON.parse(bytes.toString('utf8')); }
-  catch { throw new PromoteError('invalid GitHub release metadata'); }
-  return selectRelease(metadata, upstream, requested);
-}
-export function downloadRelease(release, budget) {
-  requireThat(/^sha256:[a-f0-9]{64}$/.test(release.digest ?? ''), 'release has no SHA-256 digest; refusing unverified download');
-  return run('curl.exe', ['--fail', '--location', '--silent', '--show-error', '--proto', '=https', '--proto-redir', '=https', '--connect-timeout', '3', '--max-time', String(Math.max(1, Math.floor(budget.remaining() / 1000))), release.url], budget, 64 * 1024 * 1024);
+export function pluginTestsPass(testPath) {
+  const r = run(process.execPath, ['--test', '--test-reporter=tap', testPath], 120000);
+  const n = label => Number(r.out.match(new RegExp(`^# ${label} (\\d+)\\s*$`, 'm'))?.[1]);
+  return n('tests') === 9 && n('pass') === 9 && n('fail') === 0 && n('skipped') === 0;
 }
 
-function writeBackedUp(path, bytes, log) {
-  const present = existsSync(path);
-  if (present) {
-    requireThat(lstatSync(path).isFile() && !lstatSync(path).isSymbolicLink(), 'refusing to overwrite non-regular file');
-    if (readFileSync(path).equals(bytes)) { log(`PASS unchanged ${path}`); return null; }
+export function checkAll(checks, log = console.log) {
+  let pass = 0, fail = 0, skip = 0;
+  for (const [label, fn] of checks) {
+    let result, reason = '';
+    try { result = fn(); } catch (e) { result = false; reason = e instanceof PromoteError ? e.message : 'unreadable input (details withheld)'; }
+    if (result === true) { pass++; log(`PASS ${label}`); }
+    else if (typeof result === 'string' && result.startsWith('skip:')) { skip++; log(`SKIP ${label} (${result.slice(5)})`); }
+    else { fail++; log(`FAIL ${label}${reason ? `\n     ${reason}` : ''}`); }
   }
-  const stamp = stampNow();
-  const backup = present ? `${path}.bak-squeez-promote-${stamp}` : null;
-  if (backup) { copyFileSync(path, backup, constants.COPYFILE_EXCL); log(`PASS backup ${backup}`); }
-  const temporary = `${path}.tmp-squeez-promote-${stamp}`;
-  writeFileSync(temporary, bytes, { flag: 'wx' });
-  try { renameSync(temporary, path); }
-  finally { if (existsSync(temporary)) unlinkSync(temporary); }
-  log(`PASS wrote ${path}`);
-  return backup;
-}
-export function installArtifacts({ root: directory, target, source, release, bytes, subsystem, testPlugin, log }) {
-  requireThat(bytes.length === release.size && release.digest === `sha256:${hash(bytes)}`, 'download size or SHA-256 mismatch');
-  log('PASS staged download size and SHA-256');
-  requireConsole(bytes, subsystem); log('PASS staged binary PE subsystem = 3 (CONSOLE)');
-  requireThat(tagPattern.test(release.tag), 'unsafe staging tag');
-  const stageDirectory = join(directory, 'staged');
-  if (existsSync(stageDirectory)) requireThat(lstatSync(stageDirectory).isDirectory() && !lstatSync(stageDirectory).isSymbolicLink(), 'staged directory must not be a link');
-  mkdirSync(stageDirectory, { recursive: true });
-  const staged = join(stageDirectory, `squeez-${release.tag}.exe`);
-  writeBackedUp(staged, bytes, log);
-  const wasPresent = existsSync(target);
-  const backup = writeBackedUp(target, readFileSync(source), log);
-  try {
-    requireThat(readFileSync(target).equals(readFileSync(source)), 'plugin byte equality failed after install');
-    testPlugin(); log('PASS reinstalled plugin: byte equality and 9 tests');
-  } catch (error) {
-    if (backup) { copyFileSync(backup, target); log(`PASS restored previous plugin from ${backup}`); }
-    else if (!wasPresent) unlinkSync(target);
-    throw error;
-  }
-  log(`PASS staged ${staged} sha256=${hash(bytes)}; live binary NOT replaced (run activate.mjs)`);
-}
-export function promote({ apply, root: directory, repoRoot = directory, manifest, plugin, release, preflight, download, testPlugin, log = console.log }) {
-  log(`PASS target ${release.tag}`);
-  if (!apply) {
-    log(`PASS DRY-RUN would download ${release.url}`);
-    log(`PASS DRY-RUN would verify size, SHA-256 and PE subsystem ${manifest.subsystemMustEqual}`);
-    log(`PASS DRY-RUN would stage ${join(directory, 'staged', `squeez-${release.tag}.exe`)}`);
-    log(`PASS DRY-RUN would back up/reinstall ${plugin.targetPath} from ${plugin.sourceOfTruth} and run 9 tests`);
-    log('PASS DRY-RUN would check hook/config invariants BEFORE download and AFTER plugin installation; abort on first drift, never repair protected files');
-    log('PASS DRY-RUN no files written, no binary downloaded, no squeez command invoked; plan is not a health check');
-    return;
-  }
-  preflight();
-  installArtifacts({ root: directory, target: plugin.targetPath, source: resolve(repoRoot, plugin.sourceOfTruth), release, bytes: download(), subsystem: manifest.subsystemMustEqual, testPlugin, log });
-  preflight();
-  log('PASS apply completed; staging only. Activate with: node local-fixes/activate.mjs --apply --version ' + release.tag);
+  log(`${pass} pass / ${fail} fail${skip ? ` / ${skip} skip` : ''}`);
+  return { pass, fail, skip };
 }
 
-// Windows refuses to overwrite a running executable, and every agent command is wrapped by squeez, so
-// squeez.exe is almost always running. Renaming a running image is allowed (measured 2026-09-30): the
-// live file moves aside, running processes keep their image, and new launches pick up the new file.
-export function activateBinary({ live, bytes, subsystem, log }) {
-  requireConsole(bytes, subsystem);
-  requireThat(existsSync(live) && lstatSync(live).isFile() && !lstatSync(live).isSymbolicLink(), 'live binary must be a regular file');
-  if (readFileSync(live).equals(bytes)) { log(`PASS live binary already equals staged sha256=${hash(bytes)}`); return null; }
-  const backup = `${live}.bak-squeez-activate-${stampNow()}`;
-  renameSync(live, backup); log(`PASS moved previous binary aside: ${backup}`);
-  try {
-    writeFileSync(live, bytes, { flag: 'wx' });
-    requireThat(readFileSync(live).equals(bytes), 'activated binary does not match staged bytes');
-  } catch (error) {
-    if (existsSync(live)) unlinkSync(live);
-    renameSync(backup, live); log('PASS restored previous binary after failed activation');
-    throw error;
+// Re-apply one overlay if (and only if) it drifted. Returns a log line.
+export function reapplyOverlay(o, ctx) {
+  const { home } = ctx;
+  if (o.id === 'opencode-plugin') {
+    const source = readFileSync(resolve(repoRoot, o.source));
+    if (existsSync(o.target) && readFileSync(o.target).equals(source)) return 'PASS opencode-plugin already the owner plugin';
+    const b = existsSync(o.target) ? backup(o.target) : null;
+    writeFileSync(o.target, source);
+    if (!pluginTestsPass(o.tests)) {
+      if (b) copyFileSync(b, o.target);
+      throw new PromoteError(`opencode-plugin tests failed after re-apply; previous plugin restored from ${b}`);
+    }
+    return `PASS opencode-plugin re-applied (backup ${b ?? 'none'})`;
   }
-  log(`PASS activated ${live} sha256=${hash(bytes)}`);
-  return backup;
-}
-export function refreshAsset({ target, template, log }) {
-  return writeBackedUp(target, withEolOf(readIfPresent(target), template), log);
-}
-export function writeInstalled(directory, { tag, sha256: digest }) {
-  requireThat(tagPattern.test(tag) && /^[a-f0-9]{64}$/.test(digest), 'invalid installed record');
-  const path = join(directory, 'installed.json');
-  const record = { tag, sha256: digest, source: `official ${tag} release asset; digest matched GitHub release metadata`, activatedAt: new Date().toISOString() };
-  const temporary = `${path}.tmp-${stampNow()}`;
-  writeFileSync(temporary, `${JSON.stringify(record, null, 2)}\n`, { flag: 'wx' });
-  renameSync(temporary, path);
-}
-export function activate({ apply, root: directory, live, stagedBytes, release, subsystem, templates, preflight, verify, log = console.log }) {
-  requireThat(release.digest === `sha256:${hash(stagedBytes)}`, 'staged binary does not match the official release digest');
-  requireConsole(stagedBytes, subsystem);
-  log(`PASS staged ${release.tag} matches official digest and is CONSOLE`);
-  if (!apply) {
-    log(`PASS DRY-RUN would move ${live} aside and install the staged binary`);
-    for (const t of templates) log(`PASS DRY-RUN would refresh ${t.target} from ${release.tag}:${t.template}`);
-    log('PASS DRY-RUN would record installed.json and run full verification');
-    return;
+  if (o.id === 'copilot-hooks') {
+    if (!existsSync(o.target)) return 'PASS copilot-hooks: Copilot not installed';
+    const settings = JSON.parse(readFileSync(o.target, 'utf8'));
+    if (copilotSettingsOk(settings)) return 'PASS copilot-hooks already registered where Copilot reads them';
+    const b = backup(o.target);
+    writeAtomic(o.target, `${JSON.stringify(normalizeCopilotSettings(settings, home), null, 2)}\n`);
+    return `PASS copilot-hooks re-applied (backup ${b})`;
   }
-  preflight();
-  const binaryBackup = activateBinary({ live, bytes: stagedBytes, subsystem, log });
-  for (const t of templates) refreshAsset({ target: t.target, template: t.bytes, log });
-  writeInstalled(directory, { tag: release.tag, sha256: hash(stagedBytes) });
-  log(`PASS recorded installed ${release.tag}`);
-  const result = verify();
-  requireThat(result.fail === 0, `activation verification failed (${result.fail}); previous binary kept at ${binaryBackup ?? 'unchanged'}; asset backups printed above`);
-  log('PASS activation complete; restart harnesses so new sessions load the new binary');
+  if (o.id === 'codex-hooks-off') {
+    const text = existsSync(o.target) ? readFileSync(o.target, 'utf8') : null;
+    if (codexSqueezHooksAbsent(text)) return 'PASS codex-hooks-off: no squeez hook registered';
+    const moved = `${o.target}.bak-squeez-promote-${stamp()}`;
+    renameSync(o.target, moved);
+    return `PASS codex-hooks-off re-applied (hooks.json moved to ${moved}; re-enable registry is hooks.json.disabled-test)`;
+  }
+  throw new PromoteError(`unknown overlay ${o.id}`);
 }
+
+export function reapplyConfig(ctx) {
+  const lines = [];
+  for (const [file, keys] of Object.entries(ctx.manifest.config)) {
+    if (!existsSync(file)) continue;
+    let text = readFileSync(file, 'utf8');
+    const drift = Object.entries(keys).filter(([k, v]) => !configSatisfies(text, k, v));
+    if (!drift.length) continue;
+    const b = backup(file);
+    for (const [k, v] of drift) text = setConfigValue(text, k, v);
+    writeAtomic(file, text);
+    lines.push(`PASS config ${file}: set ${drift.map(([k, v]) => `${k} = ${v}`).join(', ')} (backup ${b})`);
+  }
+  return lines;
+}
+
+export const ensureTag = tag => git(['rev-parse', '--verify', '--quiet', `${tag}^{commit}`]).code === 0 || git(['fetch', 'origin', 'tag', tag, '--no-tags'], 60000).code === 0;
+export { requireThat, TAG };

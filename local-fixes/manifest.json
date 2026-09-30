@@ -1,122 +1,79 @@
 {
   "tool": "squeez",
-  "installBinary": "C:/Users/Zephyrus/.claude/squeez/bin/squeez.exe",
-  "subsystemMustEqual": 3,
-  "upstream": { "repo": "claudioemmanuel/squeez", "asset": "squeez-windows-x86_64.exe", "installedRecord": "local-fixes/installed.json" },
-  "pluginTests": "C:/Users/Zephyrus/.config/opencode/tests/squeez-plugin.test.mjs",
-  "localFixes": [
+  "binary": "C:/Users/Zephyrus/.claude/squeez/bin/squeez.exe",
+  "upstream": { "repo": "claudioemmanuel/squeez", "asset": "squeez-windows-x86_64.exe" },
+  "install": "Normal upstream install: `squeez update` (downloads the latest release, checks checksums.sha256, swaps the running exe by rename, refreshes Claude Code hooks), then `squeez setup --host=<h>` for each safe host.",
+  "setupHosts": [
+    { "host": "claude-code", "requires": "C:/Users/Zephyrus/.claude" },
+    { "host": "pi", "requires": "C:/Users/Zephyrus/.pi/agent" },
+    { "host": "gemini", "requires": "C:/Users/Zephyrus/.gemini" }
+  ],
+  "neverSetupHosts": {
+    "opencode": "overwrites the owner OpenCode plugin (overlay opencode-plugin)",
+    "codex": "re-registers Codex hooks the owner keeps OFF (overlay codex-hooks-off)",
+    "copilot": "rewrites the broken top-level registration (overlay copilot-hooks, upstream #243)",
+    "all": "bare `squeez setup` runs every host above"
+  },
+  "releaseAssets": [
+    { "template": "hooks/pi-extension.ts", "target": "C:/Users/Zephyrus/.pi/agent/extensions/squeez/index.ts" },
+    { "template": "assets/buddy/lib/art.js", "target": "C:/Users/Zephyrus/.claude/squeez/buddy/lib/art.js" },
+    { "template": "assets/buddy/lib/engine.js", "target": "C:/Users/Zephyrus/.claude/squeez/buddy/lib/engine.js" },
+    { "template": "assets/buddy/lib/hud.js", "target": "C:/Users/Zephyrus/.claude/squeez/buddy/lib/hud.js" },
+    { "template": "assets/buddy/lib/squeez.js", "target": "C:/Users/Zephyrus/.claude/squeez/buddy/lib/squeez.js" },
+    { "template": "assets/buddy/lib/state.js", "target": "C:/Users/Zephyrus/.claude/squeez/buddy/lib/state.js" },
+    { "template": "assets/buddy/lib/usage.js", "target": "C:/Users/Zephyrus/.claude/squeez/buddy/lib/usage.js" }
+  ],
+  "overlays": [
     {
-      "id": "windows-hide", "what": "Hide every plugin child console window", "kind": "plugin",
-      "targetPath": "C:/Users/Zephyrus/.config/opencode/plugins/squeez.js",
-      "sourceOfTruth": "local-fixes/opencode-plugin/squeez.js",
-      "marker": "windowsHide: true", "verify": "Byte equality with pinned plugin; windowsHide: true marker present on all child calls",
-      "clobberedBy": ["squeez setup", "squeez update"], "upstreamStatus": "#235 shipped 1.48.6 (four windowsHide in the upstream plugin); the owner plugin still must be preserved because setup replaces it wholesale", "reapplyAfterUpdate": true
+      "id": "opencode-plugin",
+      "what": "Owner OpenCode plugin: on Windows wraps shell commands as powershell.exe -EncodedCommand (upstream wraps with POSIX quoting and squeez wrap runs them in bash), and bounds WSL commands with a taskkill /F /T supervisor that exits 124.",
+      "target": "C:/Users/Zephyrus/.config/opencode/plugins/squeez.js",
+      "source": "local-fixes/opencode-plugin/squeez.js",
+      "markers": ["-EncodedCommand", "taskkill /F /T /PID", "windowsHide: true", "export default {"],
+      "tests": "C:/Users/Zephyrus/.config/opencode/tests/squeez-plugin.test.mjs",
+      "clobberedBy": ["squeez setup", "squeez setup --host=opencode"],
+      "upstream": [
+        { "ref": "claudioemmanuel/squeez#244", "url": "https://github.com/claudioemmanuel/squeez/issues/244", "covers": "PowerShell -EncodedCommand wrapping", "state": "open" },
+        { "ref": "claudioemmanuel/squeez#239", "url": "https://github.com/claudioemmanuel/squeez/issues/239", "covers": "wrap timeout never returns (WSL supervisor)", "state": "open" },
+        { "ref": "claudioemmanuel/squeez#242", "url": "https://github.com/claudioemmanuel/squeez/pull/242", "covers": "dual export for OpenCode 2.x (this plugin is 1.x-only)", "state": "open PR" }
+      ],
+      "retireWhen": "A squeez release's opencode-plugin/squeez.js contains the -EncodedCommand wrapping and a bounded WSL timeout (check by marker, not by changelog). Before moving OpenCode to 2.x, merge #242's dual export into this file."
     },
     {
-      "id": "wsl-supervisor", "what": "Bound WSL wait, terminate process tree, return 124", "kind": "plugin",
-      "targetPath": "C:/Users/Zephyrus/.config/opencode/plugins/squeez.js",
-      "sourceOfTruth": "local-fixes/opencode-plugin/squeez.js",
-      "marker": "taskkill /F /T /PID", "verify": "Byte equality and nine installed plugin tests including WaitForExit and exit 124",
-      "clobberedBy": ["squeez setup", "squeez update"], "upstreamStatus": "#239 OPEN; owner mitigation required. Plugin timeout comes from SQUEEZ_WRAP_TIMEOUT_SECS (default 360), not config", "reapplyAfterUpdate": true
+      "id": "copilot-hooks",
+      "what": "Register squeez's Copilot CLI hooks under settings.hooks.<Event> with forward-slash paths; squeez 1.48.10 writes top-level keys Copilot ignores, with unquoted backslash paths.",
+      "target": "C:/Users/Zephyrus/.copilot/settings.json",
+      "clobberedBy": ["squeez setup", "squeez setup --host=copilot"],
+      "upstream": [
+        { "ref": "claudioemmanuel/squeez#243", "url": "https://github.com/claudioemmanuel/squeez/issues/243", "covers": "EventRoot::TopLevel + unquoted paths in src/hosts/copilot.rs", "state": "open" }
+      ],
+      "retireWhen": "A squeez release writes Copilot hooks under hooks.<Event> (EventRoot::Nested) with shell_arg paths; then `squeez setup --host=copilot` moves to setupHosts."
     },
     {
-      "id": "powershell-encoded-wrap", "what": "Wrap shell and bash tools through squeez.exe with a UTF-16LE -EncodedCommand PowerShell payload so quoting survives on Windows", "kind": "plugin",
-      "targetPath": "C:/Users/Zephyrus/.config/opencode/plugins/squeez.js",
-      "sourceOfTruth": "local-fixes/opencode-plugin/squeez.js",
-      "marker": "-EncodedCommand", "verify": "Byte equality; plugin tests 'preserves a PowerShell command through the Windows wrapper' and 'wraps OpenCode shell tools'",
-      "clobberedBy": ["squeez setup", "squeez update"], "upstreamStatus": "Owner-only; the upstream plugin uses Bash-only POSIX quoting. Runtime evidence 2026-09-30: OpenCode spawned squeez.exe wrap \"powershell.exe ... -EncodedCommand ...\", so binary resolution works on native Windows without the 2026-08-22 forward-slash rewrite", "reapplyAfterUpdate": true
-    },
-    {
-      "id": "plugin-source", "what": "Preserve default plugin object and exported test helpers without rewriting behavior", "kind": "plugin",
-      "targetPath": "C:/Users/Zephyrus/.config/opencode/plugins/squeez.js",
-      "sourceOfTruth": "local-fixes/opencode-plugin/squeez.js",
-      "marker": "export default {", "verify": "Installed plugin equals pinned source; nine helper tests pass",
-      "clobberedBy": ["squeez setup", "squeez update"], "upstreamStatus": "#242 dual-export PR OPEN; snapshot is the current v1 owner plugin, not a claim that the PR is applied", "reapplyAfterUpdate": true
-    },
-    {
-      "id": "compact-restore", "what": "Owner SessionStart compact restore with payload caps (single delivery path)", "kind": "hook",
-      "targetPath": "C:/Users/Zephyrus/.claude/hooks/squeez-compact-restore.sh",
-      "sourceOfTruth": "local-fixes/owner-hooks/squeez-compact-restore.sh",
-      "marker": "MAX_CHARS=8000", "verify": "Script byte equality and reference in SessionStart settings",
-      "clobberedBy": ["squeez setup (registration)", "squeez update (registration)"], "upstreamStatus": "#232 shipped 1.48.7; #233 shipped 1.48.8 (upstream caps at 4000 chars); owner caps 8000 chars + 2 MB raw kept. Do not also register the managed session-start restore", "reapplyAfterUpdate": false
-    },
-    {
-      "id": "postcompact-quiet", "what": "Exactly one quiet owner PostCompact hook; no managed postcompact.sh", "kind": "hook",
-      "targetPath": "C:/Users/Zephyrus/.claude/hooks/squeez-postcompact-quiet.sh",
-      "sourceOfTruth": "local-fixes/owner-hooks/squeez-postcompact-quiet.sh",
-      "marker": "track PostCompact 0 >/dev/null 2>&1", "verify": "Script byte equality; one PostCompact group with one owner command; no managed registration anywhere",
-      "clobberedBy": ["squeez setup (registration)", "squeez update (registration)"], "upstreamStatus": "#236 shipped 1.48.6; still verify ownership after every update", "reapplyAfterUpdate": false
-    },
-    {
-      "id": "codex-hooks-off", "what": "No squeez hook registered with Codex on Windows; context-mode Codex plugin disabled", "kind": "registration",
-      "targetPath": "C:/Users/Zephyrus/.codex/hooks.json",
-      "sourceOfTruth": "local-fixes/policy.json",
-      "marker": "hooks.json absent or holds no squeez command; [plugins.\"context-mode@context-mode\"] enabled = false", "verify": "policy.codex.hooksMode = off: no command entry mentioning squeez; exactly one enabled = false in the context-mode plugin section",
-      "clobberedBy": ["squeez setup", "squeez update"], "upstreamStatus": "Owner decision X-74 (2026-09-19) re-applied X-119 (2026-09-30) until a stable Codex >= 0.160 ships openai/codex#49164; setup/update re-create hooks.json", "reapplyAfterUpdate": false
-    },
-    {
-      "id": "codex-user-session-start", "what": "Quiet Codex SessionStart: init output discarded, no duplicate additionalContext", "kind": "hook",
-      "targetPath": "C:/Users/Zephyrus/.codex/user-hooks/squeez-session-start.sh",
-      "sourceOfTruth": "local-fixes/codex-user-hooks/squeez-session-start.sh",
-      "marker": "init --host=codex >/dev/null 2>&1", "verify": "Script byte equality and marker (kept ready for the day Codex hooks come back)",
-      "clobberedBy": ["none known"], "upstreamStatus": "Not upstream: the managed codex-session-start.sh re-emits init output as additionalContext", "reapplyAfterUpdate": false
-    },
-    {
-      "id": "codex-user-pretooluse", "what": "Codex PreToolUse wrap with shlex quoting and executable Python probe", "kind": "hook",
-      "targetPath": "C:/Users/Zephyrus/.codex/user-hooks/squeez-pretooluse.sh",
-      "sourceOfTruth": "local-fixes/codex-user-hooks/squeez-pretooluse.sh",
-      "marker": "shlex.quote(cmd)", "verify": "Script byte equality and marker",
-      "clobberedBy": ["none known"], "upstreamStatus": "Equivalent quoting upstream (hooks/codex-pretooluse.sh); owner copy kept with its registration policy", "reapplyAfterUpdate": false
-    },
-    {
-      "id": "codex-user-posttooluse", "what": "Codex PostToolUse result tracking", "kind": "hook",
-      "targetPath": "C:/Users/Zephyrus/.codex/user-hooks/squeez-posttooluse.sh",
-      "sourceOfTruth": "local-fixes/codex-user-hooks/squeez-posttooluse.sh",
-      "marker": "'track-result', tool", "verify": "Script byte equality and marker",
-      "clobberedBy": ["none known"], "upstreamStatus": "Owner copy kept with its registration policy", "reapplyAfterUpdate": false
-    },
-    {
-      "id": "wrap-timeout", "what": "Owner wrap timeout 540 seconds", "kind": "config",
-      "targetPath": "C:/Users/Zephyrus/.claude/squeez/config.ini",
-      "sourceOfTruth": "local-fixes/policy.json",
-      "marker": "wrap_timeout_secs = 540", "verify": "Exactly one active unsectioned key equals 540",
-      "clobberedBy": ["squeez setup (verify)", "squeez update (verify)"], "upstreamStatus": "Owner configuration set 2026-09-29 (was 360); #239 remains OPEN", "reapplyAfterUpdate": false
-    },
-    {
-      "id": "context-window-pin", "what": "Pin Claude context window at 1M tokens (owner #219 workaround)", "kind": "config",
-      "targetPath": "C:/Users/Zephyrus/.claude/squeez/config.ini",
-      "sourceOfTruth": "local-fixes/policy.json",
-      "marker": "context_window_tokens = 1000000", "verify": "Exactly one active unsectioned key equals 1000000",
-      "clobberedBy": ["squeez setup (verify)", "squeez update (verify)"], "upstreamStatus": "#220 (1.48.3) and #240 (1.48.10) improved detection; pin kept until the owner retires it", "reapplyAfterUpdate": false
-    },
-    {
-      "id": "auto-compress-md", "what": "Disable automatic Markdown compression in EVERY per-host squeez config (init --host=<h> reads <host>/squeez/config.ini)", "kind": "config",
-      "targetPath": "C:/Users/Zephyrus/.claude/squeez/config.ini",
-      "sourceOfTruth": "local-fixes/policy.json",
-      "marker": "auto_compress_md = false (all six hosts in policy.autoCompressOff)", "verify": "For each host config: exactly one active top-level key whose value is not exactly true (squeez semantics, src/config.rs)",
-      "clobberedBy": ["squeez setup (host config creation)", "squeez update (verify)"], "upstreamStatus": "Owner policy X-28/X-98/X-119; #218 only protects squeez's own block", "reapplyAfterUpdate": false
-    },
-    {
-      "id": "release-assets", "what": "Pi extension and buddy HUD modules must match the installed release, not an older template", "kind": "release-asset",
-      "targetPath": "C:/Users/Zephyrus/.pi/agent/extensions/squeez/index.ts",
-      "sourceOfTruth": "local-fixes/policy.json",
-      "marker": "EOL-normalized equality with <installed tag>:<template> for every policy.releaseAssets entry", "verify": "verify.mjs compares each installed file with git show <tag>:<template>; activate.mjs refreshes them with backups",
-      "clobberedBy": ["binary swaps that skip setup (2026-09-29 left Pi and hud.js at 1.48.5)"], "upstreamStatus": "#235 Pi windowsHide (1.48.6) and #240 buddy host window size (1.48.10) live in these files, not in the binary", "reapplyAfterUpdate": true
-    },
-    {
-      "id": "console-subsystem", "what": "Stock Windows executable must use CONSOLE subsystem and match the official digest", "kind": "binary-property",
-      "targetPath": "C:/Users/Zephyrus/.claude/squeez/bin/squeez.exe",
-      "sourceOfTruth": "local-fixes/installed.json",
-      "marker": "PE Subsystem uint16 at e_lfanew + 4 + 20 + 68 equals 3; SHA-256 equals installed.json", "verify": "Validate MZ, PE signature, optional-header bounds and PE32/PE32+ magic; require subsystem 3 and the recorded official digest without executing the binary",
-      "clobberedBy": ["squeez update"], "upstreamStatus": "#235 shipped 1.48.6 (CREATE_NO_WINDOW for helpers); never patch the PE to GUI (X-17, X-19)", "reapplyAfterUpdate": false
+      "id": "codex-hooks-off",
+      "what": "Owner decision (X-74, X-119): no squeez hook registered with Codex on Windows and the context-mode Codex plugin disabled, because Codex's managed daemon starts hooks without CREATE_NO_WINDOW (one flashing window per hook).",
+      "target": "C:/Users/Zephyrus/.codex/hooks.json",
+      "codexConfig": "C:/Users/Zephyrus/.codex/config.toml",
+      "clobberedBy": ["squeez setup", "squeez setup --host=codex"],
+      "upstream": [
+        { "ref": "openai/codex#49164", "url": "https://github.com/openai/codex/pull/49164", "covers": "CREATE_NO_WINDOW for hooks and background subprocesses", "state": "merged 2026-09-29; first in 0.160.0-alpha.6; no stable release yet" }
+      ],
+      "retireWhen": "A stable Codex release containing openai/codex#49164 is installed AND the owner decides to re-enable hooks; then run `squeez setup --host=codex` and drop this overlay."
     }
   ],
-  "upstreamWatch": [
-    { "id": "#239", "what": "wrap timeout never returns control", "state": "OPEN", "carry": "wsl-supervisor" },
-    { "id": "#242", "what": "dual-export OpenCode plugin (OpenCode 2.x)", "state": "OPEN", "carry": "plugin-source" },
-    { "id": "openai/codex#49164", "what": "Codex daemon launches hooks/MCP servers without CREATE_NO_WINDOW", "state": "merged, first in 0.160.0-alpha.6; no stable release yet", "carry": "codex-hooks-off" }
-  ],
-  "externalDependencies": [
-    { "what": "Orca OpenCode shell shim wraps non-plugin shells through squeez (X-37)", "path": "C:/Users/Zephyrus/.orca/agent-hooks/build/OpenCodeShell.cs", "note": "outside squeez install paths; promotion never touches it" }
-  ]
+  "config": {
+    "C:/Users/Zephyrus/.claude/squeez/config.ini": { "wrap_timeout_secs": "540", "context_window_tokens": "1000000", "auto_compress_md": "false" },
+    "C:/Users/Zephyrus/.config/opencode/squeez/config.ini": { "auto_compress_md": "false" },
+    "C:/Users/Zephyrus/.codex/squeez/config.ini": { "auto_compress_md": "false" },
+    "C:/Users/Zephyrus/.gemini/squeez/config.ini": { "auto_compress_md": "false" },
+    "C:/Users/Zephyrus/.copilot/squeez/config.ini": { "auto_compress_md": "false" },
+    "C:/Users/Zephyrus/.pi/agent/squeez/config.ini": { "auto_compress_md": "false" }
+  },
+  "configWhy": {
+    "wrap_timeout_secs": "owner value 540 (default 360); related to #239",
+    "context_window_tokens": "owner pin at 1M so squeez's context meter matches the model window",
+    "auto_compress_md": "owner policy X-28/X-98/X-119: compress-md rewrote CLAUDE.md/AGENTS.md on every session start; each host's init reads its own config.ini, and setup creates new host configs with true"
+  },
+  "syncBlockTool": "C:/Users/Zephyrus/.config/opencode/sync-block.py",
+  "instructionBlocks": ["shell-policy", "mcp-directives", "background-workers", "corpus-repo"]
 }
