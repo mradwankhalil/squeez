@@ -42,16 +42,24 @@ It **never** runs bare `squeez setup`, or `setup --host=opencode|codex|copilot`
 | `codex-hooks-off` | No squeez hook in Codex; context-mode Codex plugin disabled (owner decision X-74/X-119) | openai/codex#49164 | a stable Codex with #49164 **and** an owner decision |
 
 Owner config (not patches): `wrap_timeout_secs = 540`, `context_window_tokens =
-1000000`, and `auto_compress_md = false` in all six host configs
+1000000`, and `auto_compress_md = false` in all six host configs plus the
+OpenCode v2 profile's (`~/.opencode-v2/config/opencode/squeez/config.ini`)
 (`manifest.configWhy`).
 
-## What `verify.mjs` checks (25 checks on 2026-09-30)
+**A missing config.ini is not neutral.** `squeez init` falls back to its defaults
+when the file is absent, and the default is `auto_compress_md = true`, which
+rewrites `~/.claude/CLAUDE.md` on every session start. `manifest.configRequiredWhen`
+maps a config file to the plugin or hook that runs `init` for that host: while
+that trigger exists, an absent file is a FAIL and `apply.mjs --apply` creates it.
+
+## What `verify.mjs` checks (26 checks on 2026-09-30)
 
 Binary is CONSOLE (PE subsystem 3) and its SHA-256 equals the official release
 checksum; `squeez doctor` has no `[FAIL]`; the Pi extension and 6 buddy files
 equal the installed tag's templates; each overlay is in place (the plugin is
 byte-identical, has its markers, and passes its 9 tests); every config value
-holds; and the four canonical instruction blocks are IN SYNC.
+holds, and every required config file exists; and the four canonical instruction
+blocks are IN SYNC.
 
 ## Adding an overlay
 

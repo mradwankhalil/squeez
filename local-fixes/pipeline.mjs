@@ -7,7 +7,7 @@
 // Upstream does the install: `squeez update` downloads the release, checks it against the release's
 // checksums.sha256, swaps the running squeez.exe by renaming it, and refreshes the Claude Code hooks.
 // This pipeline only adds what upstream lacks, each overlay tied to an upstream issue (manifest.json).
-import { copyFileSync, existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { dirname, join, resolve } from 'node:path';
@@ -81,6 +81,13 @@ export function configSatisfies(text, key, expected) {
   if (v === null) return false;
   if (expected === 'false') return v !== 'true';
   return v.replace(/\s+#.*$/, '') === expected;
+}
+// A missing config.ini is not neutral: squeez init falls back to Config::default() (init.rs load_config_from),
+// whose auto_compress_md is true (config.rs), and compress_md then rewrites ~/.claude/CLAUDE.md on every session
+// start. So a host whose trigger exists (the plugin or hook that runs `squeez init` there) must have its file.
+export function configPresence(fileExists, trigger, triggerExists) {
+  if (fileExists) return 'present';
+  return trigger && triggerExists ? 'required-absent' : 'absent';
 }
 // Set one top-level key; refuses duplicates or a sectioned key rather than guessing.
 export function setConfigValue(text, key, value) {
@@ -231,7 +238,13 @@ export function verificationChecks(ctx) {
   }
   for (const [file, keys] of Object.entries(m.config)) {
     for (const [key, expected] of Object.entries(keys)) {
-      checks.push([`config ${file.replace(home.replace(/\\/g, '/'), '~')}: ${key} = ${expected}`, () => existsSync(file) ? configSatisfies(readFileSync(file, 'utf8'), key, expected) : 'skip:host config absent']);
+      const trigger = m.configRequiredWhen?.[file];
+      checks.push([`config ${file.replace(home.replace(/\\/g, '/'), '~')}: ${key} = ${expected}`, () => {
+        const state = configPresence(existsSync(file), trigger, Boolean(trigger) && existsSync(trigger));
+        if (state === 'present') return configSatisfies(readFileSync(file, 'utf8'), key, expected);
+        requireThat(state === 'absent', `host config absent while ${trigger} exists; squeez would fall back to its defaults (auto_compress_md = true)`);
+        return 'skip:host config absent';
+      }]);
     }
   }
   checks.push([`instruction blocks in sync: ${m.instructionBlocks.join(', ')}`, () => m.instructionBlocks.every(b => {
@@ -295,7 +308,17 @@ export function reapplyOverlay(o, ctx) {
 export function reapplyConfig(ctx) {
   const lines = [];
   for (const [file, keys] of Object.entries(ctx.manifest.config)) {
-    if (!existsSync(file)) continue;
+    const trigger = ctx.manifest.configRequiredWhen?.[file];
+    const state = configPresence(existsSync(file), trigger, Boolean(trigger) && existsSync(trigger));
+    if (state === 'absent') continue;
+    if (state === 'required-absent') {
+      let text = '# squeez configuration: created by local-fixes/apply.mjs (manifest.configRequiredWhen); every other key uses the squeez default\n';
+      for (const [k, v] of Object.entries(keys)) text = setConfigValue(text, k, v);
+      mkdirSync(dirname(file), { recursive: true });
+      writeAtomic(file, text);
+      lines.push(`PASS config ${file}: created with ${Object.entries(keys).map(([k, v]) => `${k} = ${v}`).join(', ')} (absent while ${trigger} exists)`);
+      continue;
+    }
     let text = readFileSync(file, 'utf8');
     const drift = Object.entries(keys).filter(([k, v]) => !configSatisfies(text, k, v));
     if (!drift.length) continue;

@@ -67,12 +67,19 @@
     "C:/Users/Zephyrus/.codex/squeez/config.ini": { "auto_compress_md": "false" },
     "C:/Users/Zephyrus/.gemini/squeez/config.ini": { "auto_compress_md": "false" },
     "C:/Users/Zephyrus/.copilot/squeez/config.ini": { "auto_compress_md": "false" },
-    "C:/Users/Zephyrus/.pi/agent/squeez/config.ini": { "auto_compress_md": "false" }
+    "C:/Users/Zephyrus/.pi/agent/squeez/config.ini": { "auto_compress_md": "false" },
+    "C:/Users/Zephyrus/.opencode-v2/config/opencode/squeez/config.ini": { "auto_compress_md": "false" }
+  },
+  "configRequiredWhen": {
+    "C:/Users/Zephyrus/.claude/squeez/config.ini": "C:/Users/Zephyrus/.claude/squeez/hooks/session-start.sh",
+    "C:/Users/Zephyrus/.config/opencode/squeez/config.ini": "C:/Users/Zephyrus/.config/opencode/plugins/squeez.js",
+    "C:/Users/Zephyrus/.opencode-v2/config/opencode/squeez/config.ini": "C:/Users/Zephyrus/.opencode-v2/config/opencode/plugins/squeez.js"
   },
   "configWhy": {
     "wrap_timeout_secs": "owner value 540 (default 360); related to #239",
     "context_window_tokens": "owner pin at 1M so squeez's context meter matches the model window",
-    "auto_compress_md": "owner policy X-28/X-98/X-119: compress-md rewrote CLAUDE.md/AGENTS.md on every session start; each host's init reads its own config.ini, and setup creates new host configs with true"
+    "auto_compress_md": "owner policy X-28/X-98/X-119: compress-md rewrote CLAUDE.md/AGENTS.md on every session start; each host's init reads its own config.ini, and setup creates new host configs with true",
+    "configRequiredWhen": "a missing config.ini is not neutral: init falls back to Config::default() (init.rs load_config_from), whose auto_compress_md is true (config.rs), so a host whose init trigger exists must have its file. The OpenCode v2 profile (XDG_CONFIG_HOME=~/.opencode-v2/config) reads ~/.opencode-v2/config/opencode/squeez/config.ini, which was absent until 2026-09-30"
   },
   "syncBlockTool": "C:/Users/Zephyrus/.config/opencode/sync-block.py",
   "instructionBlocks": ["shell-policy", "mcp-directives", "background-workers", "corpus-repo"]

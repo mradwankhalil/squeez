@@ -2,6 +2,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as p from './pipeline.mjs';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, rmSync, statSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 function pe(subsystem = 3, { optionalSize = 240, magic = 0x20b } = {}) {
   const b = Buffer.alloc(512);
@@ -47,6 +50,37 @@ test('setConfigValue replaces in place, appends when missing, keeps CRLF, refuse
   assert.equal(p.setConfigValue('enabled = true\n', 'auto_compress_md', 'false'), 'enabled = true\nauto_compress_md = false\n');
   assert.equal(p.setConfigValue('enabled = true\n[section]\nk = v\n', 'x', '1'), 'enabled = true\nx = 1\n[section]\nk = v\n');
   assert.throws(() => p.setConfigValue('a = 1\na = 2\n', 'a', '3'), p.PromoteError);
+});
+
+test('config presence: a missing file is required only while its trigger exists', () => {
+  assert.equal(p.configPresence(true, 'x', true), 'present');
+  assert.equal(p.configPresence(true, undefined, false), 'present');
+  assert.equal(p.configPresence(false, 'x', true), 'required-absent');
+  assert.equal(p.configPresence(false, 'x', false), 'absent');
+  assert.equal(p.configPresence(false, undefined, false), 'absent');
+});
+
+test('reapplyConfig creates a required config, skips an optional absent one, leaves a correct one untouched', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'sq-cfg-'));
+  try {
+    const trigger = join(dir, 'plugins', 'squeez.js');
+    mkdirSync(join(dir, 'plugins')); writeFileSync(trigger, '// plugin');
+    const required = join(dir, 'v2', 'squeez', 'config.ini');
+    const optional = join(dir, 'absent-host', 'config.ini');
+    const ok = join(dir, 'ok.ini'); writeFileSync(ok, 'auto_compress_md = false\n');
+    const before = statSync(ok).mtimeMs;
+    const ctx = { manifest: {
+      config: { [required]: { auto_compress_md: 'false' }, [optional]: { auto_compress_md: 'false' }, [ok]: { auto_compress_md: 'false' } },
+      configRequiredWhen: { [required]: trigger, [optional]: join(dir, 'no-such-trigger') },
+    } };
+    const log = p.reapplyConfig(ctx);
+    assert.equal(log.length, 1);
+    assert.match(log[0], /created with auto_compress_md = false/);
+    assert.equal(p.configSatisfies(readFileSync(required, 'utf8'), 'auto_compress_md', 'false'), true);
+    assert.equal(existsSync(optional), false);
+    assert.equal(statSync(ok).mtimeMs, before);
+    assert.deepEqual(p.reapplyConfig(ctx), [], 'idempotent');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
 test('Codex: absent hooks.json passes, any squeez command fails; context-mode must be explicitly false', () => {
@@ -104,4 +138,15 @@ test('real manifest: every overlay names an upstream issue/PR and a retire condi
   const hosts = manifest.setupHosts.map(h => h.host);
   assert.deepEqual(hosts, p.SAFE_SETUP_HOSTS);
   for (const unsafe of Object.keys(manifest.neverSetupHosts)) assert.ok(!hosts.includes(unsafe), unsafe);
+});
+
+test('real manifest: every required config is also a managed config and pins auto_compress_md = false', () => {
+  const { manifest } = p.loadContext();
+  const required = Object.entries(manifest.configRequiredWhen ?? {});
+  assert.ok(required.length >= 3);
+  for (const [file, trigger] of required) {
+    assert.ok(manifest.config[file], file);
+    assert.equal(manifest.config[file].auto_compress_md, 'false', file);
+    assert.ok(typeof trigger === 'string' && trigger.length > 0, file);
+  }
 });
