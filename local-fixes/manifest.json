@@ -40,7 +40,23 @@
         { "ref": "claudioemmanuel/squeez#239", "url": "https://github.com/claudioemmanuel/squeez/issues/239", "covers": "wrap timeout never returns (WSL supervisor)", "state": "open" },
         { "ref": "claudioemmanuel/squeez#242", "url": "https://github.com/claudioemmanuel/squeez/pull/242", "covers": "dual export for OpenCode 2.x (this plugin is 1.x-only)", "state": "open PR" }
       ],
-      "retireWhen": "A squeez release's opencode-plugin/squeez.js contains the -EncodedCommand wrapping chosen by the OpenCode shell, a bounded WSL timeout, and no execSync/execFileSync/spawnSync (#245) (check by marker, not by changelog). Before moving OpenCode to 2.x, merge #242's dual export into this file."
+      "retireWhen": "A squeez release's opencode-plugin/squeez.js contains the -EncodedCommand wrapping chosen by the OpenCode shell, a bounded WSL timeout, no execSync/execFileSync/spawnSync (#245), and the v2 setup(ctx) entry (#242) (check by marker, not by changelog). The #242 dual export was merged into this file on 2026-10-02 (see overlay opencode-plugin-v2)."
+    },
+    {
+      "id": "opencode-plugin-v2",
+      "what": "The same merged plugin installed to the OpenCode v2 profile as a config-dir drop. One file, two entry points: server() for v1 and setup(ctx) for v2 — the v2 path registers on ctx.shell/ctx.tool/ctx.event with the wrapper following the shell each create.before event carries (#244), no synchronous spawns (#245/#246), async budget injection with a 60 s cache, and the WSL supervisor on PowerShell shells (#239). This is the migration-dossier §3.6 merge of PR #242's dual export with the owner overlays.",
+      "target": "C:/Users/Zephyrus/.opencode-v2/config/opencode/plugins/squeez.js",
+      "source": "local-fixes/opencode-plugin/squeez.js",
+      "markers": ["-EncodedCommand", "taskkill /F /T /PID", "windowsHide: true", "export default {", "resolveShellFamily", "squeezInstalled", "ctx.shell.hook", "createSetup"],
+      "clobberedBy": ["squeez setup --host=opencode under the v2 launcher (XDG_CONFIG_HOME pointed at the v2 profile)"],
+      "upstream": [
+        { "ref": "claudioemmanuel/squeez#242", "url": "https://github.com/claudioemmanuel/squeez/pull/242", "covers": "dual export for OpenCode 2.x; this overlay merges it with the owner overlays instead of waiting", "state": "open PR" },
+        { "ref": "claudioemmanuel/squeez#244", "url": "https://github.com/claudioemmanuel/squeez/issues/244", "covers": "PowerShell -EncodedCommand wrapping; shell-aware wrapper reported in a follow-up comment on 2026-10-02 (issuecomment-5959771466)", "state": "open" },
+        { "ref": "claudioemmanuel/squeez#245", "url": "https://github.com/claudioemmanuel/squeez/issues/245", "covers": "no synchronous child processes: execSync fails with a false ETIMEDOUT inside the OpenCode server", "state": "open" },
+        { "ref": "claudioemmanuel/squeez#246", "url": "https://github.com/claudioemmanuel/squeez/pull/246", "covers": "the fix for #245 on the stock plugin (accessSync + async execFile, one retry, 60 s cache)", "state": "open PR" },
+        { "ref": "claudioemmanuel/squeez#239", "url": "https://github.com/claudioemmanuel/squeez/issues/239", "covers": "wrap timeout never returns (WSL supervisor)", "state": "open" }
+      ],
+      "retireWhen": "A squeez release ships the dual export WITH shell-aware wrapping, a bounded WSL timeout and no synchronous spawns (check by marker). Until then never run `squeez setup --host=opencode` under the v2 launcher — it would drop the v1-only stock file into the v2 profile."
     },
     {
       "id": "copilot-hooks",

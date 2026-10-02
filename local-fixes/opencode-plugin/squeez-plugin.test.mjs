@@ -5,6 +5,7 @@ import {
   buildWrappedCommand,
   buildWslSupervisorScript,
   createHooks,
+  createSetup,
   detectWslDistro,
   isAlreadyWrapped,
   isWslCommand,
@@ -251,4 +252,99 @@ test("the plugin source never starts a child process synchronously", () => {
   const source = readFileSync(new URL("../plugins/squeez.js", import.meta.url), "utf8");
   const code = source.split("\n").filter((line) => !line.trimStart().startsWith("//")).join("\n");
   assert.doesNotMatch(code, /\b(execSync|execFileSync|spawnSync)\b/);
+});
+
+
+// ── v2 setup() entry (PR #242 merged with the owner overlays): hooks register
+//    on ctx domains; the wrapper follows the shell each create.before carries ──
+
+function fakeCtx() {
+  const registered = { shell: [], tool: [], subscribed: false };
+  return {
+    registered,
+    ctx: {
+      shell: { hook: (name, cb) => registered.shell.push([name, cb]) },
+      tool: { hook: (name, cb) => registered.tool.push([name, cb]) },
+      event: { subscribe: () => { registered.subscribed = true; return (async function* () {})(); } },
+    },
+  };
+}
+
+test("the default export exposes both entry points", async () => {
+  const mod = await import("../plugins/squeez.js");
+  assert.equal(mod.default.id, "squeez");
+  assert.equal(typeof mod.default.setup, "function");
+  assert.equal(typeof mod.default.server, "function");
+});
+
+test("v2 setup tolerates a null ctx and missing domains", () => {
+  const setup = createSetup({ exists: () => true, runSqueez: async () => "" });
+  setup(null);
+  setup({});
+});
+
+test("v2 setup registers nothing when squeez is absent", () => {
+  const { registered, ctx } = fakeCtx();
+  createSetup({ exists: () => false, runSqueez: async () => "" })(ctx);
+  assert.equal(registered.shell.length, 0);
+  assert.equal(registered.tool.length, 0);
+  assert.equal(registered.subscribed, false);
+});
+
+test("v2 setup wraps create.before with the shell the event carries", () => {
+  const { registered, ctx } = fakeCtx();
+  createSetup({ squeezBinary: WIN_BIN, platform: "win32", env: {}, exists: () => true, runSqueez: async () => "" })(ctx);
+  const wrap = registered.shell.find(([name]) => name === "create.before")?.[1];
+  assert.ok(wrap);
+
+  const ps = { command: "echo hi", shell: "pwsh" };
+  wrap(ps);
+  assert.match(ps.command, /^& '.*squeez\.exe' wrap 'powershell\.exe .* -EncodedCommand /);
+
+  const sh = { command: "echo hi", shell: "bash" };
+  wrap(sh);
+  assert.equal(sh.command, "'C:/Users/Test/.claude/squeez/bin/squeez.exe' wrap 'echo hi'");
+
+  const wsl = { command: "wsl.exe -- ls", shell: "bash" };
+  wrap(wsl);
+  assert.equal(wsl.command, "wsl.exe -- ls");
+
+  const skip = { command: "--no-squeez echo hi", shell: "bash" };
+  wrap(skip);
+  assert.equal(skip.command, "--no-squeez echo hi");
+});
+
+test("v2 setup injects the read budget into the mutable input field", async () => {
+  const { registered, ctx } = fakeCtx();
+  const calls = [];
+  createSetup({
+    squeezBinary: WIN_BIN,
+    platform: "win32",
+    env: {},
+    exists: () => true,
+    runSqueez: async (args) => { calls.push(args.join(" ")); return '{"limit":300}'; },
+  })(ctx);
+  const before = registered.tool.find(([name]) => name === "execute.before")?.[1];
+  assert.ok(before);
+  const e = { tool: "read", input: {} };
+  await before(e);
+  assert.equal(e.input.limit, 300);
+  const explicit = { tool: "read", input: { limit: 5 } };
+  await before(explicit);
+  assert.equal(explicit.input.limit, 5);
+  assert.deepEqual(calls, ["budget-params Read"]);
+});
+
+test("v2 setup runs init on session.created, tolerant of a numeric suffix", async () => {
+  const calls = [];
+  const ctx = {
+    event: {
+      subscribe: () => (async function* () {
+        yield { type: "session.created.1" };
+      })(),
+    },
+  };
+  createSetup({ exists: () => true, runSqueez: async (args) => { calls.push(args.join(" ")); return ""; } })(ctx);
+  await new Promise((r) => setTimeout(r, 20));
+  assert.deepEqual(calls, ["init --host=opencode"]);
 });
