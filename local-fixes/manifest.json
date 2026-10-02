@@ -33,7 +33,7 @@
       "tests": "C:/Users/Zephyrus/.config/opencode/tests/squeez-plugin.test.mjs",
       "clobberedBy": ["squeez setup", "squeez setup --host=opencode"],
       "upstream": [
-        { "ref": "claudioemmanuel/squeez#244", "url": "https://github.com/claudioemmanuel/squeez/issues/244", "covers": "PowerShell -EncodedCommand wrapping", "state": "open" },
+        { "ref": "claudioemmanuel/squeez#244", "url": "https://github.com/claudioemmanuel/squeez/issues/244", "covers": "PowerShell -EncodedCommand wrapping; shell-aware wrapper reported in a follow-up comment on 2026-10-02 (issuecomment-5959771466). The execSync false-timeout fix has no upstream issue yet", "state": "open" },
         { "ref": "claudioemmanuel/squeez#239", "url": "https://github.com/claudioemmanuel/squeez/issues/239", "covers": "wrap timeout never returns (WSL supervisor)", "state": "open" },
         { "ref": "claudioemmanuel/squeez#242", "url": "https://github.com/claudioemmanuel/squeez/pull/242", "covers": "dual export for OpenCode 2.x (this plugin is 1.x-only)", "state": "open PR" }
       ],
