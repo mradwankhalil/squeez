@@ -185,3 +185,38 @@ test('real manifest: the exclusion pattern matches the identifier OMO derives fo
   assert.equal(re.test(identifier('C:\Users\Zephyrus\.orca\agent-hooks\claude-hook.exe')), false);
   assert.equal(re.test(identifier('bash "C:/Users/Zephyrus/.claude/squeez/hooks/posttooluse.sh"')), false);
 });
+
+// ---------- ledger-carried files (the plugin's tests live outside this repo once installed) ----------
+
+test('ledger files: missing and drifted targets are detected byte for byte and repaired from the ledger copy', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'sq-ledger-file-'));
+  try {
+    const source = join(dir, 'source.mjs');
+    const target = join(dir, 'installed', 'target.mjs');
+    writeFileSync(source, 'export const a = 1;\n');
+    assert.equal(p.ledgerFileState(target, source), 'missing');
+    assert.equal(p.restoreLedgerFile(target, source), null);
+    assert.equal(p.ledgerFileState(target, source), 'ok');
+    assert.equal(readFileSync(target, 'utf8'), 'export const a = 1;\n');
+
+    writeFileSync(target, 'export const a = 2;\n');
+    assert.equal(p.ledgerFileState(target, source), 'drifted');
+    const backup = p.restoreLedgerFile(target, source);
+    assert.ok(backup && existsSync(backup));
+    assert.equal(readFileSync(backup, 'utf8'), 'export const a = 2;\n');
+    assert.equal(p.ledgerFileState(target, source), 'ok');
+    assert.equal(p.restoreLedgerFile(target, source), null);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('real manifest: the plugin overlay carries its test file in the ledger, with the no-sync-spawn guard in it', () => {
+  const { manifest } = p.loadContext();
+  const o = manifest.overlays.find(x => x.id === 'opencode-plugin');
+  assert.ok(o.testsSource, 'testsSource missing');
+  const source = join(p.repoRoot, o.testsSource);
+  assert.ok(existsSync(source), source);
+  assert.match(readFileSync(source, 'utf8'), /never starts a child process synchronously/);
+  assert.ok(o.upstream.some(u => /issues\/245$/.test(u.url)), 'the execSync issue must be named');
+});

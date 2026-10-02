@@ -229,6 +229,20 @@ function writeAtomic(path, text) {
   renameSync(tmp, path);
 }
 
+// A file whose source of truth is the ledger: compared byte for byte, restored with a backup.
+export function ledgerFileState(target, source) {
+  if (!existsSync(target)) return 'missing';
+  return readFileSync(target).equals(readFileSync(source)) ? 'ok' : 'drifted';
+}
+export function restoreLedgerFile(target, source) {
+  const state = ledgerFileState(target, source);
+  if (state === 'ok') return null;
+  const b = state === 'drifted' ? backup(target) : null;
+  mkdirSync(dirname(target), { recursive: true });
+  copyFileSync(source, target);
+  return b;
+}
+
 // Each check: [label, fn] where fn returns true (PASS), false (FAIL), or 'skip:<reason>'.
 export function verificationChecks(ctx) {
   const { manifest: m, home } = ctx;
@@ -249,6 +263,7 @@ export function verificationChecks(ctx) {
     if (o.id === 'opencode-plugin') {
       checks.push([`overlay opencode-plugin: installed plugin byte-identical to ${o.source}`, () => existsSync(o.target) && readFileSync(o.target).equals(readFileSync(resolve(repoRoot, o.source)))]);
       checks.push(['overlay opencode-plugin: markers ' + o.markers.join(' | '), () => o.markers.every(k => readFileSync(o.target, 'utf8').includes(k))]);
+      if (o.testsSource) checks.push([`overlay opencode-plugin: installed tests byte-identical to ${o.testsSource}`, () => ledgerFileState(o.tests, resolve(repoRoot, o.testsSource)) === 'ok']);
       checks.push(['overlay opencode-plugin: installed plugin tests 18 pass / 0 fail', () => pluginTestsPass(o.tests)]);
     } else if (o.id === 'copilot-hooks') {
       checks.push(['overlay copilot-hooks: squeez hooks under hooks.<Event>, forward-slash paths, no top-level keys', () => !existsSync(o.target) || copilotSettingsOk(JSON.parse(readFileSync(o.target, 'utf8')))]);
@@ -309,14 +324,19 @@ export function reapplyOverlay(o, ctx) {
   const { home } = ctx;
   if (o.id === 'opencode-plugin') {
     const source = readFileSync(resolve(repoRoot, o.source));
-    if (existsSync(o.target) && readFileSync(o.target).equals(source)) return 'PASS opencode-plugin already the owner plugin';
+    // The plugin's tests are installed outside this repo; the ledger copy is their source of truth too.
+    const testsSource = o.testsSource ? resolve(repoRoot, o.testsSource) : null;
+    const testsDrifted = testsSource !== null && ledgerFileState(o.tests, testsSource) !== 'ok';
+    const tb = testsDrifted ? restoreLedgerFile(o.tests, testsSource) : null;
+    const testsNote = testsDrifted ? `; its tests restored from the ledger (backup ${tb ?? 'none'})` : '';
+    if (existsSync(o.target) && readFileSync(o.target).equals(source)) return `PASS opencode-plugin already the owner plugin${testsNote}`;
     const b = existsSync(o.target) ? backup(o.target) : null;
     writeFileSync(o.target, source);
     if (!pluginTestsPass(o.tests)) {
       if (b) copyFileSync(b, o.target);
       throw new PromoteError(`opencode-plugin tests failed after re-apply; previous plugin restored from ${b}`);
     }
-    return `PASS opencode-plugin re-applied (backup ${b ?? 'none'})`;
+    return `PASS opencode-plugin re-applied (backup ${b ?? 'none'})${testsNote}`;
   }
   if (o.id === 'copilot-hooks') {
     if (!existsSync(o.target)) return 'PASS copilot-hooks: Copilot not installed';

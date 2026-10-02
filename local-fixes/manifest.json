@@ -31,13 +31,16 @@
       "source": "local-fixes/opencode-plugin/squeez.js",
       "markers": ["-EncodedCommand", "taskkill /F /T /PID", "windowsHide: true", "export default {", "resolveShellFamily", "squeezInstalled"],
       "tests": "C:/Users/Zephyrus/.config/opencode/tests/squeez-plugin.test.mjs",
+      "testsSource": "local-fixes/opencode-plugin/squeez-plugin.test.mjs",
       "clobberedBy": ["squeez setup", "squeez setup --host=opencode"],
       "upstream": [
-        { "ref": "claudioemmanuel/squeez#244", "url": "https://github.com/claudioemmanuel/squeez/issues/244", "covers": "PowerShell -EncodedCommand wrapping; shell-aware wrapper reported in a follow-up comment on 2026-10-02 (issuecomment-5959771466). The execSync false-timeout fix has no upstream issue yet", "state": "open" },
+        { "ref": "claudioemmanuel/squeez#244", "url": "https://github.com/claudioemmanuel/squeez/issues/244", "covers": "PowerShell -EncodedCommand wrapping; shell-aware wrapper reported in a follow-up comment on 2026-10-02 (issuecomment-5959771466)", "state": "open" },
+        { "ref": "claudioemmanuel/squeez#245", "url": "https://github.com/claudioemmanuel/squeez/issues/245", "covers": "no synchronous child processes: execSync fails with a false ETIMEDOUT inside the OpenCode server, so the read/grep budget was never applied", "state": "open" },
+        { "ref": "claudioemmanuel/squeez#246", "url": "https://github.com/claudioemmanuel/squeez/pull/246", "covers": "the fix for #245 on the stock plugin (accessSync + async execFile, one retry, 60 s cache)", "state": "open PR" },
         { "ref": "claudioemmanuel/squeez#239", "url": "https://github.com/claudioemmanuel/squeez/issues/239", "covers": "wrap timeout never returns (WSL supervisor)", "state": "open" },
         { "ref": "claudioemmanuel/squeez#242", "url": "https://github.com/claudioemmanuel/squeez/pull/242", "covers": "dual export for OpenCode 2.x (this plugin is 1.x-only)", "state": "open PR" }
       ],
-      "retireWhen": "A squeez release's opencode-plugin/squeez.js contains the -EncodedCommand wrapping and a bounded WSL timeout (check by marker, not by changelog). Before moving OpenCode to 2.x, merge #242's dual export into this file."
+      "retireWhen": "A squeez release's opencode-plugin/squeez.js contains the -EncodedCommand wrapping chosen by the OpenCode shell, a bounded WSL timeout, and no execSync/execFileSync/spawnSync (#245) (check by marker, not by changelog). Before moving OpenCode to 2.x, merge #242's dual export into this file."
     },
     {
       "id": "copilot-hooks",
