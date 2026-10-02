@@ -71,10 +71,13 @@ exclusion only when no `opencode*` process predates the plugin; until then
 verify reports `SKIP ... pending OpenCode restart`. Restart OpenCode, rerun
 `apply.mjs --apply`; OMO re-reads the file within 30 seconds.
 
-**Known gap.** OMO's `non-interactive-env` hook rewrites every command that
-contains the word `git` through the same `replaceToolArgs`, so those commands are
-still detached and run unwrapped (and without OMO's git environment). Only a fix
-to `replaceToolArgs` in the OMO fork closes it; that is an owner decision.
+**The other half lives in the OMO ledger.** OMO's `non-interactive-env` hook
+rewrote every command containing the word `git` through the same `replaceToolArgs`,
+so those stayed detached. OMO ledger fix `17-tool-args-in-place`
+(`Documents/ai/oh-my-openagent-fix/local-fixes`, 2026-10-02) makes OMO edit the
+args in place. With that fix the Claude hook's own rewrite would take effect too;
+it only knows the POSIX form and also compresses Task prompts, so the exclusion
+stays: the shell-aware plugin is the one wrapper under OpenCode.
 
 ## What `verify.mjs` checks (27 checks on 2026-10-02)
 
