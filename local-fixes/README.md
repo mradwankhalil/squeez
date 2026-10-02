@@ -28,7 +28,9 @@ and read the file.
 3. Re-applies each overlay **only if it drifted**, with a
    `.bak-squeez-promote-<UTC>` backup next to every changed file.
 4. Re-applies the owner config values, only if drifted.
-5. Runs the full verification and exits 1 on any FAIL.
+5. Writes the OMO exclusion (below), only when no running OpenCode server
+   predates the installed plugin; otherwise prints `DEFER` and changes nothing.
+6. Runs the full verification and exits 1 on any FAIL.
 
 It **never** runs bare `squeez setup`, or `setup --host=opencode|codex|copilot`
 (`manifest.neverSetupHosts` says why for each).
@@ -37,7 +39,7 @@ It **never** runs bare `squeez setup`, or `setup --host=opencode|codex|copilot`
 
 | Overlay | What | Upstream | Retire when |
 |---|---|---|---|
-| `opencode-plugin` | Owner OpenCode plugin: Windows `-EncodedCommand` wrapping; bounded WSL timeout (`taskkill /F /T`, exit 124) | squeez #244, #239; #242 for OpenCode 2.x | a release's plugin has both, checked by marker |
+| `opencode-plugin` | Owner OpenCode plugin: the wrapper follows the OpenCode `shell` key, not the OS (PowerShell: `-EncodedCommand`; bash: POSIX quoting, forward-slash quoted binary); bounded WSL timeout under PowerShell (`taskkill /F /T`, exit 124), WSL left unwrapped under bash | squeez #244, #239; #242 for OpenCode 2.x | a release's plugin has both, checked by marker |
 | `copilot-hooks` | Copilot hooks under `hooks.<Event>` with forward-slash paths | squeez #243 | setup writes them there itself |
 | `codex-hooks-off` | No squeez hook in Codex; context-mode Codex plugin disabled (owner decision X-74/X-119) | openai/codex#49164 | a stable Codex with #49164 **and** an owner decision |
 
@@ -52,14 +54,32 @@ rewrites `~/.claude/CLAUDE.md` on every session start. `manifest.configRequiredW
 maps a config file to the plugin or hook that runs `init` for that host: while
 that trigger exists, an absent file is a FAIL and `apply.mjs --apply` creates it.
 
-## What `verify.mjs` checks (26 checks on 2026-09-30)
+## OMO exclusion (`manifest.omoClaudeHooksOff`)
+
+oh-my-openagent runs Claude Code's PreToolUse hooks on OpenCode tool calls and
+applies their `updatedInput` with `output.args = {...}`. OpenCode executes the
+original args object, so that result is dropped, and the squeez plugin, which
+runs after OMO, edits the detached copy. Result before 2026-10-02: only commands
+that `squeez should-wrap` rejects (`rm -rf`, `git push --force`) reached the
+plugin's wrapper; everything else ran raw. `~/.config/opencode/opencode-cc-plugin.json`
+now excludes squeez's Claude `pretooluse.sh` for OMO, so the plugin is the only
+wrapper under OpenCode and its edit lands on the object OpenCode executes.
+
+**Restart order matters.** A server that started before the plugin file was
+written still runs the previous plugin. `apply.mjs` therefore writes the
+exclusion only when no `opencode*` process predates the plugin; until then
+verify reports `SKIP ... pending OpenCode restart`. Restart OpenCode, rerun
+`apply.mjs --apply`; OMO re-reads the file within 30 seconds.
+
+## What `verify.mjs` checks (27 checks on 2026-10-02)
 
 Binary is CONSOLE (PE subsystem 3) and its SHA-256 equals the official release
 checksum; `squeez doctor` has no `[FAIL]`; the Pi extension and 6 buddy files
 equal the installed tag's templates; each overlay is in place (the plugin is
-byte-identical, has its markers, and passes its 9 tests); every config value
-holds, and every required config file exists; and the four canonical instruction
-blocks are IN SYNC.
+byte-identical, has its markers, and passes its 14 tests); every config value
+holds, and every required config file exists; the OMO exclusion is present (SKIP
+while an OpenCode restart is pending); and the four canonical instruction blocks
+are IN SYNC.
 
 ## Adding an overlay
 

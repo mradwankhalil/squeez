@@ -26,10 +26,10 @@
   "overlays": [
     {
       "id": "opencode-plugin",
-      "what": "Owner OpenCode plugin: on Windows wraps shell commands as powershell.exe -EncodedCommand (upstream wraps with POSIX quoting and squeez wrap runs them in bash), and bounds WSL commands with a taskkill /F /T supervisor that exits 124.",
+      "what": "Owner OpenCode plugin: on Windows the wrapper follows the OpenCode `shell` config key, not the OS. A PowerShell shell gets powershell.exe -EncodedCommand (upstream wraps with POSIX quoting and squeez wrap runs them in bash) and WSL commands bounded by a taskkill /F /T supervisor that exits 124; a bash shell gets the POSIX form with a forward-slash quoted binary path, and WSL commands are left unwrapped so the host timeout bounds them.",
       "target": "C:/Users/Zephyrus/.config/opencode/plugins/squeez.js",
       "source": "local-fixes/opencode-plugin/squeez.js",
-      "markers": ["-EncodedCommand", "taskkill /F /T /PID", "windowsHide: true", "export default {"],
+      "markers": ["-EncodedCommand", "taskkill /F /T /PID", "windowsHide: true", "export default {", "resolveShellFamily"],
       "tests": "C:/Users/Zephyrus/.config/opencode/tests/squeez-plugin.test.mjs",
       "clobberedBy": ["squeez setup", "squeez setup --host=opencode"],
       "upstream": [
@@ -80,6 +80,13 @@
     "context_window_tokens": "owner pin at 1M so squeez's context meter matches the model window",
     "auto_compress_md": "owner policy X-28/X-98/X-119: compress-md rewrote CLAUDE.md/AGENTS.md on every session start; each host's init reads its own config.ini, and setup creates new host configs with true",
     "configRequiredWhen": "a missing config.ini is not neutral: init falls back to Config::default() (init.rs load_config_from), whose auto_compress_md is true (config.rs), so a host whose init trigger exists must have its file. The OpenCode v2 profile (XDG_CONFIG_HOME=~/.opencode-v2/config) reads ~/.opencode-v2/config/opencode/squeez/config.ini, which was absent until 2026-09-30"
+  },
+  "omoClaudeHooksOff": {
+    "file": "C:/Users/Zephyrus/.config/opencode/opencode-cc-plugin.json",
+    "event": "PreToolUse",
+    "pattern": "^pretooluse\\.sh\"?$",
+    "plugin": "C:/Users/Zephyrus/.config/opencode/plugins/squeez.js",
+    "why": "oh-my-openagent runs Claude Code PreToolUse hooks on OpenCode tool calls and applies updatedInput with output.args = {...} (packages/utils/src/replace-tool-args.ts). OpenCode executes the original args object (session/tools.ts passes { args } and never reads output.args back), so the Claude hook's wrap is dropped and the squeez plugin, which runs after OMO, edits the detached copy: commands ran raw except the ones squeez should-wrap rejects. Under OpenCode the squeez plugin is the wrapper, so squeez's Claude pretooluse.sh is excluded for OMO. OMO matches the pattern against command.split('/').pop(), which for the registered command is pretooluse.sh followed by a double quote. Remove when OMO applies updatedInput in place or OpenCode reads output.args back, and an owner decision says which of the two wrappers should run."
   },
   "syncBlockTool": "C:/Users/Zephyrus/.config/opencode/sync-block.py",
   "instructionBlocks": ["shell-policy", "mcp-directives", "background-workers", "corpus-repo"]

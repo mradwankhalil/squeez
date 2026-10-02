@@ -150,3 +150,38 @@ test('real manifest: every required config is also a managed config and pins aut
     assert.ok(typeof trigger === 'string' && trigger.length > 0, file);
   }
 });
+
+// ---------- OMO Claude-hook exclusion (the squeez plugin, not Claude's pretooluse.sh, wraps under OpenCode) ----------
+
+test('cc-plugin config: detects, adds and preserves a disabled PreToolUse pattern', () => {
+  const pat = '^pretooluse\.sh"?$';
+  assert.equal(p.ccPluginDisables(null, 'PreToolUse', pat), false);
+  assert.equal(p.ccPluginDisables('{ not json', 'PreToolUse', pat), false);
+  assert.equal(p.ccPluginDisables('{"disabledHooks":{"PostToolUse":["x"]}}', 'PreToolUse', pat), false);
+
+  const created = p.withCcPluginDisabled(null, 'PreToolUse', pat);
+  assert.deepEqual(JSON.parse(created), { disabledHooks: { PreToolUse: [pat] } });
+  assert.equal(p.ccPluginDisables(created, 'PreToolUse', pat), true);
+
+  const merged = p.withCcPluginDisabled('{"keep":1,"disabledHooks":{"PreToolUse":["other"],"Stop":["s"]}}', 'PreToolUse', pat);
+  assert.deepEqual(JSON.parse(merged), { keep: 1, disabledHooks: { PreToolUse: ['other', pat], Stop: ['s'] } });
+  assert.equal(p.withCcPluginDisabled(merged, 'PreToolUse', pat), merged);
+});
+
+test('stale servers: only processes started before the plugin was written count', () => {
+  const procs = [{ pid: 1, name: 'opencode-patched-1.18.33.exe', startedMs: 1000 }, { pid: 2, name: 'opencode.exe', startedMs: 3000 }];
+  assert.deepEqual(p.staleServers(procs, 2000).map(x => x.pid), [1]);
+  assert.deepEqual(p.staleServers(procs, 500), []);
+  assert.deepEqual(p.staleServers([], 2000), []);
+});
+
+test('real manifest: the exclusion pattern matches the identifier OMO derives for the squeez hook, and nothing else registered', () => {
+  const { manifest } = p.loadContext();
+  const x = manifest.omoClaudeHooksOff;
+  assert.ok(x && x.why.length > 40);
+  const identifier = command => command.split('/').pop() || command; // OMO getHookIdentifier
+  const re = new RegExp(x.pattern);
+  assert.equal(re.test(identifier('bash "C:/Users/Zephyrus/.claude/squeez/hooks/pretooluse.sh"')), true);
+  assert.equal(re.test(identifier('C:\Users\Zephyrus\.orca\agent-hooks\claude-hook.exe')), false);
+  assert.equal(re.test(identifier('bash "C:/Users/Zephyrus/.claude/squeez/hooks/posttooluse.sh"')), false);
+});

@@ -2,7 +2,7 @@
 //   node local-fixes/apply.mjs             dry-run: current health + the plan (writes nothing)
 //   node local-fixes/apply.mjs --apply     squeez update -> setup (safe hosts) -> overlays + config -> verify
 import { existsSync } from 'node:fs';
-import { PromoteError, checkAll, ensureTag, loadContext, parseArgs, reapplyConfig, reapplyOverlay, run, verificationChecks, versionTag } from './pipeline.mjs';
+import { PromoteError, checkAll, ensureTag, loadContext, parseArgs, reapplyConfig, reapplyOmoExclusion, reapplyOverlay, run, verificationChecks, versionTag } from './pipeline.mjs';
 
 try {
   const { apply } = parseArgs(process.argv.slice(2));
@@ -21,7 +21,8 @@ try {
     console.log(`  2. squeez setup --host=...  ${hosts.join(', ')}  (never: ${Object.keys(m.neverSetupHosts).join(', ')})`);
     for (const o of m.overlays) console.log(`  3. overlay ${o.id}: re-apply only if drifted  [${o.upstream.map(u => u.ref).join(', ')}]`);
     console.log('  4. config values re-applied only if drifted (backup first)');
-    console.log('  5. full verification; any FAIL exits 1');
+    console.log('  5. omo exclusion of the Claude squeez PreToolUse hook: written only when no OpenCode server predates the plugin');
+    console.log('  6. full verification; any FAIL exits 1');
   } else {
     const u = run(m.binary, ['update'], 300000);
     u.out.trim().split(/\r?\n/).forEach(l => console.log(`     ${l}`));
@@ -37,6 +38,7 @@ try {
     }
     for (const o of m.overlays) console.log(reapplyOverlay(o, ctx));
     reapplyConfig(ctx).forEach(l => console.log(l));
+    reapplyOmoExclusion(ctx).forEach(l => console.log(l));
     console.log('INFO verification:');
     const result = checkAll(verificationChecks(ctx));
     if (result.fail) throw new PromoteError(`${result.fail} check(s) failed after promotion; backups are next to each changed file`);

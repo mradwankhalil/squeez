@@ -7,7 +7,7 @@
 // Upstream does the install: `squeez update` downloads the release, checks it against the release's
 // checksums.sha256, swaps the running squeez.exe by renaming it, and refreshes the Claude Code hooks.
 // This pipeline only adds what upstream lacks, each overlay tied to an upstream issue (manifest.json).
-import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { dirname, join, resolve } from 'node:path';
@@ -170,6 +170,27 @@ export function doctorFailures(output) {
 }
 export const normalizeEol = bytes => Buffer.from(bytes).toString('utf8').replace(/\r\n/g, '\n');
 
+// oh-my-openagent runs Claude Code's PreToolUse hooks on OpenCode tool calls and applies their updatedInput
+// with `output.args = {...}`. OpenCode executes the original args object, so that result is dropped, and every
+// plugin hook that runs afterwards (the squeez plugin) edits the detached copy: nothing gets wrapped. Excluding
+// squeez's Claude hook in opencode-cc-plugin.json leaves the args object alone, and the plugin's wrap takes effect.
+function parseJsonObject(text) {
+  try { const v = JSON.parse(text); return v && typeof v === 'object' && !Array.isArray(v) ? v : null; } catch { return null; }
+}
+export function ccPluginDisables(text, event, pattern) {
+  const list = text === null ? null : parseJsonObject(text)?.disabledHooks?.[event];
+  return Array.isArray(list) && list.includes(pattern);
+}
+export function withCcPluginDisabled(text, event, pattern) {
+  if (ccPluginDisables(text, event, pattern)) return text;
+  const cfg = (text === null ? null : parseJsonObject(text)) ?? {};
+  const disabled = { ...(cfg.disabledHooks ?? {}) };
+  disabled[event] = [...(Array.isArray(disabled[event]) ? disabled[event] : []), pattern];
+  return `${JSON.stringify({ ...cfg, disabledHooks: disabled }, null, 2)}\n`;
+}
+// A server that started before the plugin file was written still runs the previous plugin.
+export const staleServers = (procs, pluginMtimeMs) => procs.filter(p => p.startedMs < pluginMtimeMs);
+
 // ---------- context and side-effecting steps ----------
 
 export function loadContext() {
@@ -228,7 +249,7 @@ export function verificationChecks(ctx) {
     if (o.id === 'opencode-plugin') {
       checks.push([`overlay opencode-plugin: installed plugin byte-identical to ${o.source}`, () => existsSync(o.target) && readFileSync(o.target).equals(readFileSync(resolve(repoRoot, o.source)))]);
       checks.push(['overlay opencode-plugin: markers ' + o.markers.join(' | '), () => o.markers.every(k => readFileSync(o.target, 'utf8').includes(k))]);
-      checks.push(['overlay opencode-plugin: installed plugin tests 9 pass / 0 fail', () => pluginTestsPass(o.tests)]);
+      checks.push(['overlay opencode-plugin: installed plugin tests 14 pass / 0 fail', () => pluginTestsPass(o.tests)]);
     } else if (o.id === 'copilot-hooks') {
       checks.push(['overlay copilot-hooks: squeez hooks under hooks.<Event>, forward-slash paths, no top-level keys', () => !existsSync(o.target) || copilotSettingsOk(JSON.parse(readFileSync(o.target, 'utf8')))]);
     } else if (o.id === 'codex-hooks-off') {
@@ -247,6 +268,16 @@ export function verificationChecks(ctx) {
       }]);
     }
   }
+  if (m.omoClaudeHooksOff) {
+    const x = m.omoClaudeHooksOff;
+    checks.push([`omo: Claude ${x.event} hook ${x.pattern} excluded in ${x.file.replace(home.replace(/\\/g, '/'), '~')}`, () => {
+      const s = omoExclusionState(x);
+      if (s.state === 'present') return true;
+      if (s.state === 'not-needed') return 'skip:OpenCode squeez plugin not installed';
+      if (s.state === 'pending') return `skip:pending OpenCode restart (${s.detail}); restart it, then rerun apply.mjs --apply`;
+      return false;
+    }]);
+  }
   checks.push([`instruction blocks in sync: ${m.instructionBlocks.join(', ')}`, () => m.instructionBlocks.every(b => {
     const r = run('python', [m.syncBlockTool, b, '--check'], 60000);
     return r.code === 0 && !/DRIFT|MISSING|ABSENT/i.test(r.out) && /IN SYNC/.test(r.out);
@@ -257,7 +288,7 @@ export function verificationChecks(ctx) {
 export function pluginTestsPass(testPath) {
   const r = run(process.execPath, ['--test', '--test-reporter=tap', testPath], 120000);
   const n = label => Number(r.out.match(new RegExp(`^# ${label} (\\d+)\\s*$`, 'm'))?.[1]);
-  return n('tests') === 9 && n('pass') === 9 && n('fail') === 0 && n('skipped') === 0;
+  return n('tests') === 14 && n('pass') === 14 && n('fail') === 0 && n('skipped') === 0;
 }
 
 export function checkAll(checks, log = console.log) {
@@ -328,6 +359,42 @@ export function reapplyConfig(ctx) {
     lines.push(`PASS config ${file}: set ${drift.map(([k, v]) => `${k} = ${v}`).join(', ')} (backup ${b})`);
   }
   return lines;
+}
+
+function opencodeServers() {
+  const script = "$ProgressPreference='SilentlyContinue'; Get-CimInstance Win32_Process | Where-Object { $_.Name -like 'opencode*' } | ForEach-Object { '{0}|{1}|{2}' -f $_.ProcessId, $_.Name, ([DateTimeOffset]$_.CreationDate).ToUnixTimeMilliseconds() }";
+  const r = run('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script], 60000);
+  if (r.code !== 0) return null;
+  return [...r.out.matchAll(/^(\d+)\|([^|\r\n]+)\|(\d+)\s*$/gm)]
+    .map(([, pid, name, startedMs]) => ({ pid: Number(pid), name, startedMs: Number(startedMs) }))
+    .filter(p => p.name.toLowerCase() !== 'opencode-shell.exe');
+}
+
+export function omoExclusionState(x) {
+  const text = existsSync(x.file) ? readFileSync(x.file, 'utf8') : null;
+  if (ccPluginDisables(text, x.event, x.pattern)) return { state: 'present' };
+  if (!existsSync(x.plugin)) return { state: 'not-needed' };
+  const servers = opencodeServers();
+  if (servers === null) return { state: 'pending', detail: 'could not list OpenCode processes' };
+  const stale = staleServers(servers, statSync(x.plugin).mtimeMs);
+  if (stale.length) return { state: 'pending', detail: `${stale.map(p => `${p.name} pid ${p.pid}`).join(', ')} started before the plugin was written` };
+  return { state: 'absent' };
+}
+
+// Written only when no running OpenCode server predates the installed plugin: under a server that still runs an
+// older plugin, the exclusion makes that plugin's wrapper effective for every command.
+export function reapplyOmoExclusion(ctx) {
+  const x = ctx.manifest.omoClaudeHooksOff;
+  if (!x) return [];
+  const s = omoExclusionState(x);
+  if (s.state === 'present' || s.state === 'not-needed') return [];
+  if (s.state === 'pending') return [`DEFER omo exclusion: ${s.detail}; restart OpenCode, then rerun apply.mjs --apply`];
+  const text = existsSync(x.file) ? readFileSync(x.file, 'utf8') : null;
+  requireThat(text === null || parseJsonObject(text) !== null, `${x.file} is not a JSON object; fix it by hand, nothing was written`);
+  const b = text === null ? null : backup(x.file);
+  mkdirSync(dirname(x.file), { recursive: true });
+  writeAtomic(x.file, withCcPluginDisabled(text, x.event, x.pattern));
+  return [`PASS omo exclusion: ${x.event} ${x.pattern} added to ${x.file} (backup ${b ?? 'none'})`];
 }
 
 export const ensureTag = tag => git(['rev-parse', '--verify', '--quiet', `${tag}^{commit}`]).code === 0 || git(['fetch', 'origin', 'tag', tag, '--no-tags'], 60000).code === 0;

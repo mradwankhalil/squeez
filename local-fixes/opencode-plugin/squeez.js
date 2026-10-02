@@ -26,6 +26,16 @@
 // wsl.exe only, the wrapper is replaced by a bounded supervisor that waits
 // `wrap_timeout_secs`, then runs `taskkill /F /T /PID` and exits 124. Every
 // other command is wrapped byte-identically to before.
+//
+// Shell family: `squeez wrap` runs its argument in bash, and the wrapper
+// itself is parsed by whichever shell OpenCode's shell tool uses. So the
+// form follows the configured shell, not the OS. PowerShell shells get
+// `& '<squeez>' wrap 'powershell.exe -EncodedCommand …'`; POSIX shells
+// (Git Bash on Windows included) get `'<squeez>' wrap '<cmd>'`. Emitting
+// the PowerShell form into bash fails every call with `syntax error near
+// unexpected token '&'`. Under bash, wsl.exe commands are left unwrapped:
+// the supervisor is PowerShell-only, and the host's own timeout kills the
+// process tree.
 
 import { execSync, spawn } from "child_process";
 
@@ -42,6 +52,29 @@ export function resolveSqueezBinary({ platform = process.platform, home = HOME }
 
 export function shouldWrapTool(tool) {
   return tool === "shell" || tool === "bash";
+}
+
+const POSIX_SHELLS = new Set(["bash", "sh", "zsh", "dash", "ksh"]);
+const POWERSHELL_SHELLS = new Set(["powershell", "pwsh", "opencode-shell"]);
+
+// Mirrors OpenCode's choice: the `shell` config key, else $SHELL, else the
+// platform default (PowerShell on Windows).
+export function resolveShellFamily({
+  configShell,
+  env = process.env,
+  platform = process.platform,
+} = {}) {
+  const shell = configShell || env.SHELL || "";
+  const name = String(shell).split(/[\\/]/).pop().toLowerCase().replace(/\.exe$/, "");
+  if (POSIX_SHELLS.has(name)) return "posix";
+  if (POWERSHELL_SHELLS.has(name)) return "powershell";
+  return platform === "win32" ? "powershell" : "posix";
+}
+
+export function isAlreadyWrapped(command) {
+  if (typeof command !== "string") return false;
+  if (command.includes("squeez wrap")) return true;
+  return /^\s*(?:&\s*)?(?:'[^']*squeez(?:\.exe)?'|"[^"]*squeez(?:\.exe)?"|\S*squeez(?:\.exe)?)\s+wrap\s/i.test(command);
 }
 
 export function resolveWrapTimeoutSecs(env = process.env) {
@@ -97,10 +130,14 @@ export function buildWrappedCommand(command, {
   platform = process.platform,
   squeezBinary = resolveSqueezBinary({ platform }),
   env = process.env,
+  shellFamily = platform === "win32" ? "powershell" : "posix",
 } = {}) {
-  if (platform !== "win32") {
+  if (platform !== "win32" || shellFamily === "posix") {
     const quoted = "'" + String(command).replace(/'/g, "'\\''") + "'";
-    return `${squeezBinary} wrap ${quoted}`;
+    if (platform !== "win32") return `${squeezBinary} wrap ${quoted}`;
+    if (isWslCommand(command)) return command;
+    // Forward slashes and quotes: bash would eat the backslashes otherwise.
+    return `'${squeezBinary.replace(/\\/g, "/")}' wrap ${quoted}`;
   }
 
   const timeoutSecs = resolveWrapTimeoutSecs(env);
@@ -180,6 +217,63 @@ function trackResult(tool) {
   }
 }
 
+export function createHooks({
+  squeezBinary = SQUEEZ_BIN,
+  platform = process.platform,
+  env = process.env,
+} = {}) {
+  let shellFamily = resolveShellFamily({ env, platform });
+
+  return {
+    // OpenCode hands every plugin the resolved config once at load.
+    config: async (cfg) => {
+      shellFamily = resolveShellFamily({ configShell: cfg && cfg.shell, env, platform });
+    },
+
+    event: async ({ event }) => {
+      if (event && event.type === "session.created") {
+        runInit();
+      }
+    },
+
+    "tool.execute.before": async (input, output) => {
+      if (!input || !output || !output.args) return;
+
+      if (shouldWrapTool(input.tool)) {
+        const command = output.args.command;
+        if (!command || typeof command !== "string") return;
+        if (command.startsWith(squeezBinary)) return;
+        if (isAlreadyWrapped(command)) return;
+        if (command.startsWith("--no-squeez")) return;
+        output.args.command = buildWrappedCommand(command, {
+          platform,
+          squeezBinary,
+          env,
+          shellFamily,
+        });
+        return;
+      }
+
+      const patch = budgetPatch(input.tool);
+      if (!patch) return;
+      for (const [k, v] of Object.entries(patch)) {
+        // Do not override fields the user (or agent) already set explicitly.
+        if (output.args[k] === undefined) {
+          output.args[k] = v;
+        }
+      }
+    },
+
+    "tool.execute.after": async (input) => {
+      if (!input || !input.tool) return;
+      // Only track tools we know about — keeps the noise down.
+      if (["bash", "shell", "read", "grep", "glob"].includes(input.tool)) {
+        trackResult(input.tool);
+      }
+    },
+  };
+}
+
 export default {
   id: "squeez",
   server: async (_input, _options) => {
@@ -188,45 +282,6 @@ export default {
     // as if the plugin were not installed.
     if (!squeezExists()) return {};
 
-    return {
-      event: async ({ event }) => {
-        if (event && event.type === "session.created") {
-          runInit();
-        }
-      },
-
-      "tool.execute.before": async (input, output) => {
-        if (!input || !output || !output.args) return;
-
-        if (shouldWrapTool(input.tool)) {
-          const command = output.args.command;
-          if (!command || typeof command !== "string") return;
-          if (command.startsWith(SQUEEZ_BIN)) return;
-          if (command.includes("squeez wrap")) return;
-          if (command.startsWith("--no-squeez")) return;
-          output.args.command = buildWrappedCommand(command, {
-            squeezBinary: SQUEEZ_BIN,
-          });
-          return;
-        }
-
-        const patch = budgetPatch(input.tool);
-        if (!patch) return;
-        for (const [k, v] of Object.entries(patch)) {
-          // Do not override fields the user (or agent) already set explicitly.
-          if (output.args[k] === undefined) {
-            output.args[k] = v;
-          }
-        }
-      },
-
-      "tool.execute.after": async (input) => {
-        if (!input || !input.tool) return;
-        // Only track tools we know about — keeps the noise down.
-        if (["bash", "shell", "read", "grep", "glob"].includes(input.tool)) {
-          trackResult(input.tool);
-        }
-      },
-    };
+    return createHooks();
   },
 };
