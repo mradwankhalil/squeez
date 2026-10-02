@@ -71,6 +71,11 @@ exclusion only when no `opencode*` process predates the plugin; until then
 verify reports `SKIP ... pending OpenCode restart`. Restart OpenCode, rerun
 `apply.mjs --apply`; OMO re-reads the file within 30 seconds.
 
+**Known gap.** OMO's `non-interactive-env` hook rewrites every command that
+contains the word `git` through the same `replaceToolArgs`, so those commands are
+still detached and run unwrapped (and without OMO's git environment). Only a fix
+to `replaceToolArgs` in the OMO fork closes it; that is an owner decision.
+
 ## What `verify.mjs` checks (27 checks on 2026-10-02)
 
 Binary is CONSOLE (PE subsystem 3) and its SHA-256 equals the official release
