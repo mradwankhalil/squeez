@@ -26,10 +26,10 @@
   "overlays": [
     {
       "id": "opencode-plugin",
-      "what": "Owner OpenCode plugin: on Windows the wrapper follows the OpenCode `shell` config key, not the OS. A PowerShell shell gets powershell.exe -EncodedCommand (upstream wraps with POSIX quoting and squeez wrap runs them in bash) and WSL commands bounded by a taskkill /F /T supervisor that exits 124; a bash shell gets the POSIX form with a forward-slash quoted binary path, and WSL commands are left unwrapped so the host timeout bounds them.",
+      "what": "Owner OpenCode plugin: on Windows the wrapper follows the OpenCode `shell` config key, not the OS. A PowerShell shell gets powershell.exe -EncodedCommand (upstream wraps with POSIX quoting and squeez wrap runs them in bash) and WSL commands bounded by a taskkill /F /T supervisor that exits 124; a bash shell gets the POSIX form with a forward-slash quoted binary path, and WSL commands are left unwrapped so the host timeout bounds them. The plugin starts no child process synchronously: inside the OpenCode server the first execSync of a hook call fails at once with a false ETIMEDOUT, which dropped the read/grep budget; it uses existsSync and async execFile (one retry, 60 s cache).",
       "target": "C:/Users/Zephyrus/.config/opencode/plugins/squeez.js",
       "source": "local-fixes/opencode-plugin/squeez.js",
-      "markers": ["-EncodedCommand", "taskkill /F /T /PID", "windowsHide: true", "export default {", "resolveShellFamily"],
+      "markers": ["-EncodedCommand", "taskkill /F /T /PID", "windowsHide: true", "export default {", "resolveShellFamily", "squeezInstalled"],
       "tests": "C:/Users/Zephyrus/.config/opencode/tests/squeez-plugin.test.mjs",
       "clobberedBy": ["squeez setup", "squeez setup --host=opencode"],
       "upstream": [

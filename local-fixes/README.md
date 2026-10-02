@@ -39,7 +39,7 @@ It **never** runs bare `squeez setup`, or `setup --host=opencode|codex|copilot`
 
 | Overlay | What | Upstream | Retire when |
 |---|---|---|---|
-| `opencode-plugin` | Owner OpenCode plugin: the wrapper follows the OpenCode `shell` key, not the OS (PowerShell: `-EncodedCommand`; bash: POSIX quoting, forward-slash quoted binary); bounded WSL timeout under PowerShell (`taskkill /F /T`, exit 124), WSL left unwrapped under bash | squeez #244, #239; #242 for OpenCode 2.x | a release's plugin has both, checked by marker |
+| `opencode-plugin` | Owner OpenCode plugin: the wrapper follows the OpenCode `shell` key, not the OS (PowerShell: `-EncodedCommand`; bash: POSIX quoting, forward-slash quoted binary); bounded WSL timeout under PowerShell (`taskkill /F /T`, exit 124), WSL left unwrapped under bash; no synchronous child processes (the first `execSync` of a hook call fails with a false `ETIMEDOUT` inside the server) | squeez #244, #239; #242 for OpenCode 2.x | a release's plugin has both, checked by marker |
 | `copilot-hooks` | Copilot hooks under `hooks.<Event>` with forward-slash paths | squeez #243 | setup writes them there itself |
 | `codex-hooks-off` | No squeez hook in Codex; context-mode Codex plugin disabled (owner decision X-74/X-119) | openai/codex#49164 | a stable Codex with #49164 **and** an owner decision |
 
@@ -84,7 +84,7 @@ stays: the shell-aware plugin is the one wrapper under OpenCode.
 Binary is CONSOLE (PE subsystem 3) and its SHA-256 equals the official release
 checksum; `squeez doctor` has no `[FAIL]`; the Pi extension and 6 buddy files
 equal the installed tag's templates; each overlay is in place (the plugin is
-byte-identical, has its markers, and passes its 14 tests); every config value
+byte-identical, has its markers, and passes its 18 tests); every config value
 holds, and every required config file exists; the OMO exclusion is present (SKIP
 while an OpenCode restart is pending); and the four canonical instruction blocks
 are IN SYNC.

@@ -249,7 +249,7 @@ export function verificationChecks(ctx) {
     if (o.id === 'opencode-plugin') {
       checks.push([`overlay opencode-plugin: installed plugin byte-identical to ${o.source}`, () => existsSync(o.target) && readFileSync(o.target).equals(readFileSync(resolve(repoRoot, o.source)))]);
       checks.push(['overlay opencode-plugin: markers ' + o.markers.join(' | '), () => o.markers.every(k => readFileSync(o.target, 'utf8').includes(k))]);
-      checks.push(['overlay opencode-plugin: installed plugin tests 14 pass / 0 fail', () => pluginTestsPass(o.tests)]);
+      checks.push(['overlay opencode-plugin: installed plugin tests 18 pass / 0 fail', () => pluginTestsPass(o.tests)]);
     } else if (o.id === 'copilot-hooks') {
       checks.push(['overlay copilot-hooks: squeez hooks under hooks.<Event>, forward-slash paths, no top-level keys', () => !existsSync(o.target) || copilotSettingsOk(JSON.parse(readFileSync(o.target, 'utf8')))]);
     } else if (o.id === 'codex-hooks-off') {
@@ -288,7 +288,7 @@ export function verificationChecks(ctx) {
 export function pluginTestsPass(testPath) {
   const r = run(process.execPath, ['--test', '--test-reporter=tap', testPath], 120000);
   const n = label => Number(r.out.match(new RegExp(`^# ${label} (\\d+)\\s*$`, 'm'))?.[1]);
-  return n('tests') === 14 && n('pass') === 14 && n('fail') === 0 && n('skipped') === 0;
+  return n('tests') === 18 && n('pass') === 18 && n('fail') === 0 && n('skipped') === 0;
 }
 
 export function checkAll(checks, log = console.log) {

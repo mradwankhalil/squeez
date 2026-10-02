@@ -16,9 +16,16 @@
 //   - tool.execute.after (any known tool) → fire-and-forget
 //     `squeez track-result` for post-execution context tracking.
 //
-// Every child below passes `windowsHide: true`. On Windows, execSync goes
-// through cmd.exe and a detached spawn gets its own console, so without it
-// each tool call flashed a console window (squeez issue #231).
+// Every child below passes `windowsHide: true`. On Windows a child without
+// it gets its own console, so each tool call flashed a console window
+// (squeez issue #231).
+//
+// No synchronous child processes. Inside the OpenCode server the first
+// execSync of a hook call fails at once with a false ETIMEDOUT (measured:
+// 10 ms into a 3000 ms timeout; the same call succeeds when repeated). That
+// silently dropped the read/grep budget, and at load it could have dropped
+// every hook. So: the installed check is a file test, and squeez is run
+// with async execFile, no shell, one retry.
 //
 // WSL supervisor (squeez incident X-80): `squeez wrap` prints its timeout
 // notice but does not terminate the child tree, and a live WSL grandchild
@@ -37,7 +44,8 @@
 // the supervisor is PowerShell-only, and the host's own timeout kills the
 // process tree.
 
-import { execSync, spawn } from "child_process";
+import { execFile, spawn } from "child_process";
+import { existsSync } from "fs";
 
 const HOME = process.env.HOME || process.env.USERPROFILE || "";
 
@@ -171,37 +179,23 @@ const BUDGET_TOOL_SLUG = {
   grep: "Grep",
 };
 
-function squeezExists() {
+export function squeezInstalled(binary = SQUEEZ_BIN, exists = existsSync) {
   try {
-    execSync(`test -x "${SQUEEZ_BIN}"`, { timeout: 500, windowsHide: true });
-    return true;
+    return exists(binary) === true;
   } catch {
     return false;
   }
 }
 
-function runInit() {
-  try {
-    execSync(`"${SQUEEZ_BIN}" init --host=opencode`, { timeout: 5000, windowsHide: true });
-  } catch {
-    // best-effort — don't break the session if squeez init fails
-  }
-}
-
-function budgetPatch(tool) {
-  const slug = BUDGET_TOOL_SLUG[tool];
-  if (!slug) return null;
-  try {
-    const out = execSync(`"${SQUEEZ_BIN}" budget-params ${slug}`, {
-      timeout: 2000,
-      encoding: "utf8",
-      windowsHide: true,
-    }).trim();
-    if (!out) return null;
-    return JSON.parse(out);
-  } catch {
-    return null;
-  }
+function runSqueezAsync(args, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    execFile(
+      SQUEEZ_BIN,
+      args,
+      { timeout: timeoutMs, encoding: "utf8", windowsHide: true },
+      (error, stdout) => (error ? reject(error) : resolve(String(stdout))),
+    );
+  });
 }
 
 function trackResult(tool) {
@@ -221,8 +215,31 @@ export function createHooks({
   squeezBinary = SQUEEZ_BIN,
   platform = process.platform,
   env = process.env,
+  runSqueez = runSqueezAsync,
+  budgetTtlMs = 60000,
 } = {}) {
   let shellFamily = resolveShellFamily({ env, platform });
+
+  // The budget comes from squeez's config, which rarely changes: ask once
+  // per tool and keep the answer for a minute. A failure is not kept.
+  const budgetCache = new Map();
+  async function budgetPatch(tool) {
+    const slug = BUDGET_TOOL_SLUG[tool];
+    if (!slug) return null;
+    const hit = budgetCache.get(slug);
+    if (hit && Date.now() - hit.at < budgetTtlMs) return hit.patch;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const out = (await runSqueez(["budget-params", slug], 2000)).trim();
+        const patch = out ? JSON.parse(out) : null;
+        budgetCache.set(slug, { at: Date.now(), patch });
+        return patch;
+      } catch {
+        // try once more, then leave the call untouched
+      }
+    }
+    return null;
+  }
 
   return {
     // OpenCode hands every plugin the resolved config once at load.
@@ -232,7 +249,8 @@ export function createHooks({
 
     event: async ({ event }) => {
       if (event && event.type === "session.created") {
-        runInit();
+        // best-effort and not awaited: don't hold the session up if init fails
+        runSqueez(["init", "--host=opencode"], 5000).catch(() => {});
       }
     },
 
@@ -254,7 +272,7 @@ export function createHooks({
         return;
       }
 
-      const patch = budgetPatch(input.tool);
+      const patch = await budgetPatch(input.tool);
       if (!patch) return;
       for (const [k, v] of Object.entries(patch)) {
         // Do not override fields the user (or agent) already set explicitly.
@@ -280,7 +298,7 @@ export default {
     // Returning `{}` (not `undefined`) keeps the plugin loader happy when
     // squeez isn't on the machine. Hooks are simply absent so OpenCode runs
     // as if the plugin were not installed.
-    if (!squeezExists()) return {};
+    if (!squeezInstalled()) return {};
 
     return createHooks();
   },
