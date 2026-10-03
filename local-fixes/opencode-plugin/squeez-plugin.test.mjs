@@ -20,6 +20,7 @@ const {
   resolveWrapTimeoutSecs,
   shouldWrapTool,
   squeezInstalled,
+  trackResult,
 } = await import(PLUGIN_SPEC);
 
 test("resolves the Windows Squeez executable", () => {
@@ -370,4 +371,91 @@ test("v2 setup runs init once per session on session.execution.started", async (
   createSetup({ exists: () => true, runSqueez: async (args) => { calls.push(args.join(" ")); return ""; } })(ctx);
   await new Promise((r) => setTimeout(r, 20));
   assert.deepEqual(calls, ["init --host=opencode", "init --host=opencode"]);
+});
+
+test("v2 setup tracks shell completions via shell.exited with a JSON stdin payload", async () => {
+  const tracks = [];
+  const ctx = {
+    event: {
+      subscribe: () => (async function* () {
+        yield { type: "shell.exited", data: { id: "sh1", status: "exited", exit: 0 } };
+        yield { type: "shell.exited.1", data: { id: "sh2", status: "timeout" } };
+        yield { type: "shell.exited", data: { id: "sh3", status: "running" } }; // non-terminal
+        yield { type: "shell.exited", data: { status: "exited" } }; // missing id
+        yield { type: "shell.exited", data: null }; // malformed
+        yield { type: "message.updated", data: { id: "sh4", status: "exited" } }; // unrelated
+      })(),
+    },
+  };
+  createSetup({
+    exists: () => true,
+    runSqueez: async () => "",
+    trackResult: (tool, bin, payload) => { tracks.push({ tool, payload }); },
+  })(ctx);
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(tracks.length, 2);
+  assert.equal(tracks[0].tool, "bash");
+  assert.deepEqual(tracks[0].payload, { tool_name: "Bash", shell_id: "sh1", shell_status: "exited", exit_code: 0 });
+  assert.deepEqual(tracks[1].payload, { tool_name: "Bash", shell_id: "sh2", shell_status: "timeout" });
+});
+
+test("v2 execute.after leaves shell to the exit observer and keeps read/grep/glob", async () => {
+  const tracks = [];
+  const hooks = [];
+  const ctx = { tool: { hook: (name, fn) => hooks.push([name, fn]) } };
+  createSetup({
+    exists: () => true,
+    runSqueez: async () => "",
+    trackResult: (tool) => { tracks.push(tool); },
+  })(ctx);
+  const after = hooks.find(([n]) => n === "execute.after")[1];
+  after({ tool: "shell" });
+  after({ tool: "bash" });
+  after({ tool: "read" });
+  after({ tool: "grep" });
+  after({ tool: "glob" });
+  after({ tool: "write" });
+  assert.deepEqual(tracks, ["read", "grep", "glob"]);
+});
+
+test("trackResult pipes the JSON payload to stdin with EOF", () => {
+  const writes = [];
+  const seen = [];
+  const fakeChild = {
+    stdin: { on: () => {}, end: (data) => writes.push(data) },
+    on: () => {},
+    unref: () => {},
+  };
+  trackResult("bash", "/fake/squeez.exe", { shell_id: "sh1" }, (bin, args, opts) => {
+    seen.push({ bin, args, opts });
+    return fakeChild;
+  });
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0].bin, "/fake/squeez.exe");
+  assert.deepEqual(seen[0].args, ["track-result", "bash"]);
+  assert.deepEqual(seen[0].opts.stdio, ["pipe", "ignore", "ignore"]);
+  assert.equal(seen[0].opts.detached, true);
+  assert.equal(seen[0].opts.windowsHide, true);
+  assert.deepEqual(writes, [JSON.stringify({ shell_id: "sh1" })]);
+});
+
+test("trackResult without payload keeps stdio ignored (legacy path unchanged)", () => {
+  const seen = [];
+  trackResult("read", "/fake/squeez.exe", undefined, (bin, args, opts) => {
+    seen.push({ args, opts });
+    return { on: () => {}, unref: () => {}, stdin: null };
+  });
+  assert.deepEqual(seen[0].args, ["track-result", "read"]);
+  assert.equal(seen[0].opts.stdio, "ignore");
+});
+
+test("trackResult swallows spawn errors and stdin EPIPE", () => {
+  assert.doesNotThrow(() => {
+    trackResult("bash", "/fake", { a: 1 }, () => { throw new Error("ENOENT"); });
+    trackResult("bash", "/fake", { a: 1 }, () => ({
+      on: (ev, fn) => { if (ev === "error") fn(new Error("spawn failed")); },
+      stdin: { on: (ev, fn) => { if (ev === "error") fn(new Error("EPIPE")); }, end: () => { throw new Error("EPIPE"); } },
+      unref: () => {},
+    }));
+  });
 });

@@ -26,10 +26,10 @@
   "overlays": [
     {
       "id": "opencode-plugin",
-      "what": "Owner OpenCode plugin: on Windows the wrapper follows the OpenCode `shell` config key, not the OS. A PowerShell shell gets powershell.exe -EncodedCommand (upstream wraps with POSIX quoting and squeez wrap runs them in bash) and WSL commands bounded by a taskkill /F /T supervisor that exits 124; a bash shell gets the POSIX form with a forward-slash quoted binary path, and WSL commands are left unwrapped so the host timeout bounds them. The plugin starts no child process synchronously: inside the OpenCode server the first execSync of a hook call fails at once with a false ETIMEDOUT, which dropped the read/grep budget; it uses existsSync and async execFile (one retry, 60 s cache).",
+      "what": "Owner OpenCode plugin: on Windows the wrapper follows the OpenCode `shell` config key, not the OS. A PowerShell shell gets powershell.exe -EncodedCommand (upstream wraps with POSIX quoting and squeez wrap runs them in bash) and WSL commands bounded by a taskkill /F /T supervisor that exits 124; a bash shell gets the POSIX form with a forward-slash quoted binary path, and WSL commands are left unwrapped so the host timeout bounds them. The plugin starts no child process synchronously: inside the OpenCode server the first execSync of a hook call fails at once with a false ETIMEDOUT, which dropped the read/grep budget; it uses existsSync and async execFile (one retry, 60 s cache). Post-execution tracking pipes a JSON payload to `squeez track-result` over stdin with EOF (the observer no-ops on empty stdin — upstream #247); the v2 path subscribes shell.exited for shell completions and session.execution.started (per-session dedupe) for init.",
       "target": "C:/Users/Zephyrus/.config/opencode/plugins/squeez.js",
       "source": "local-fixes/opencode-plugin/squeez.js",
-      "markers": ["-EncodedCommand", "taskkill /F /T /PID", "windowsHide: true", "export default {", "resolveShellFamily", "squeezInstalled"],
+      "markers": ["-EncodedCommand", "taskkill /F /T /PID", "windowsHide: true", "export default {", "resolveShellFamily", "squeezInstalled", "shell_status", "child.stdin.end"],
       "tests": "C:/Users/Zephyrus/.config/opencode/tests/squeez-plugin.test.mjs",
       "testsSource": "local-fixes/opencode-plugin/squeez-plugin.test.mjs",
       "clobberedBy": ["squeez setup", "squeez setup --host=opencode"],
@@ -38,25 +38,27 @@
         { "ref": "claudioemmanuel/squeez#245", "url": "https://github.com/claudioemmanuel/squeez/issues/245", "covers": "no synchronous child processes: execSync fails with a false ETIMEDOUT inside the OpenCode server, so the read/grep budget was never applied", "state": "open" },
         { "ref": "claudioemmanuel/squeez#246", "url": "https://github.com/claudioemmanuel/squeez/pull/246", "covers": "the fix for #245 on the stock plugin (accessSync + async execFile, one retry, 60 s cache)", "state": "open PR" },
         { "ref": "claudioemmanuel/squeez#239", "url": "https://github.com/claudioemmanuel/squeez/issues/239", "covers": "wrap timeout never returns (WSL supervisor)", "state": "open" },
-        { "ref": "claudioemmanuel/squeez#242", "url": "https://github.com/claudioemmanuel/squeez/pull/242", "covers": "dual export for OpenCode 2.x (this plugin is 1.x-only)", "state": "open PR" }
+        { "ref": "claudioemmanuel/squeez#242", "url": "https://github.com/claudioemmanuel/squeez/pull/242", "covers": "dual export for OpenCode 2.x (this plugin is 1.x-only)", "state": "open PR" },
+        { "ref": "claudioemmanuel/squeez#247", "url": "https://github.com/claudioemmanuel/squeez/issues/247", "covers": "track-result silent no-op (empty stdin, all hosts), shell.exited completion tracking + session.execution.started init alias on 2.x; fix rides PR #242 commit 4d2a0f3", "state": "open" }
       ],
-      "retireWhen": "A squeez release's opencode-plugin/squeez.js contains the -EncodedCommand wrapping chosen by the OpenCode shell, a bounded WSL timeout, no execSync/execFileSync/spawnSync (#245), and the v2 setup(ctx) entry (#242) (check by marker, not by changelog). The #242 dual export was merged into this file on 2026-10-02 (see overlay opencode-plugin-v2)."
+      "retireWhen": "A squeez release's opencode-plugin/squeez.js contains the -EncodedCommand wrapping chosen by the OpenCode shell, a bounded WSL timeout, no execSync/execFileSync/spawnSync (#245), the v2 setup(ctx) entry (#242) and the #247 event-surface fixes (marker: shell_status in the plugin) (check by marker, not by changelog). The #242 dual export was merged into this file on 2026-10-02 (see overlay opencode-plugin-v2)."
     },
     {
       "id": "opencode-plugin-v2",
-      "what": "The same merged plugin installed to the OpenCode v2 profile as a config-dir drop. One file, two entry points: server() for v1 and setup(ctx) for v2 — the v2 path registers on ctx.shell/ctx.tool/ctx.event with the wrapper following the shell each create.before event carries (#244), no synchronous spawns (#245/#246), async budget injection with a 60 s cache, and the WSL supervisor on PowerShell shells (#239). This is the migration-dossier §3.6 merge of PR #242's dual export with the owner overlays.",
+      "what": "The same merged plugin installed to the OpenCode v2 profile as a config-dir drop. One file, two entry points: server() for v1 and setup(ctx) for v2 — the v2 path registers on ctx.shell/ctx.tool/ctx.event with the wrapper following the shell each create.before event carries (#244), no synchronous spawns (#245/#246), async budget injection with a 60 s cache, and the WSL supervisor on PowerShell shells (#239). This is the migration-dossier §3.6 merge of PR #242's dual export with the owner overlays. It also tracks shell completions via the shell.exited bus event with a real stdin payload (track-result was a silent no-op on empty stdin everywhere) and restores per-session init via the session.execution.started alias with per-session dedupe (#247, PR #242 commit 4d2a0f3); v2 execute.after is restricted to read/grep/glob so shell is never double-counted.",
       "target": "C:/Users/Zephyrus/.opencode-v2/config/opencode/plugins/squeez.js",
       "source": "local-fixes/opencode-plugin/squeez.js",
-      "markers": ["-EncodedCommand", "taskkill /F /T /PID", "windowsHide: true", "export default {", "resolveShellFamily", "squeezInstalled", "ctx.shell.hook", "createSetup"],
+      "markers": ["-EncodedCommand", "taskkill /F /T /PID", "windowsHide: true", "export default {", "resolveShellFamily", "squeezInstalled", "ctx.shell.hook", "createSetup", "shell_status", "child.stdin.end"],
       "clobberedBy": ["squeez setup --host=opencode under the v2 launcher (XDG_CONFIG_HOME pointed at the v2 profile)"],
       "upstream": [
         { "ref": "claudioemmanuel/squeez#242", "url": "https://github.com/claudioemmanuel/squeez/pull/242", "covers": "dual export for OpenCode 2.x; this overlay merges it with the owner overlays instead of waiting", "state": "open PR" },
         { "ref": "claudioemmanuel/squeez#244", "url": "https://github.com/claudioemmanuel/squeez/issues/244", "covers": "PowerShell -EncodedCommand wrapping; shell-aware wrapper reported in a follow-up comment on 2026-10-02 (issuecomment-5959771466)", "state": "open" },
         { "ref": "claudioemmanuel/squeez#245", "url": "https://github.com/claudioemmanuel/squeez/issues/245", "covers": "no synchronous child processes: execSync fails with a false ETIMEDOUT inside the OpenCode server", "state": "open" },
         { "ref": "claudioemmanuel/squeez#246", "url": "https://github.com/claudioemmanuel/squeez/pull/246", "covers": "the fix for #245 on the stock plugin (accessSync + async execFile, one retry, 60 s cache)", "state": "open PR" },
-        { "ref": "claudioemmanuel/squeez#239", "url": "https://github.com/claudioemmanuel/squeez/issues/239", "covers": "wrap timeout never returns (WSL supervisor)", "state": "open" }
+        { "ref": "claudioemmanuel/squeez#239", "url": "https://github.com/claudioemmanuel/squeez/issues/239", "covers": "wrap timeout never returns (WSL supervisor)", "state": "open" },
+        { "ref": "claudioemmanuel/squeez#247", "url": "https://github.com/claudioemmanuel/squeez/issues/247", "covers": "track-result silent no-op (empty stdin), shell.exited tracking + session.execution.started init alias on 2.x; fix rides PR #242 commit 4d2a0f3", "state": "open" }
       ],
-      "retireWhen": "A squeez release ships the dual export WITH shell-aware wrapping, a bounded WSL timeout and no synchronous spawns (check by marker). Until then never run `squeez setup --host=opencode` under the v2 launcher — it would drop the v1-only stock file into the v2 profile."
+      "retireWhen": "A squeez release ships the dual export WITH shell-aware wrapping, a bounded WSL timeout, no synchronous spawns and the #247 event-surface fixes (marker: shell_status in the plugin) (check by marker). Until then never run `squeez setup --host=opencode` under the v2 launcher — it would drop the v1-only stock file into the v2 profile."
     },
     {
       "id": "copilot-hooks",

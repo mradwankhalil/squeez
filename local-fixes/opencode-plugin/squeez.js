@@ -229,14 +229,24 @@ function makeRunner(squeezBinary) {
     });
 }
 
-function trackResult(tool, squeezBinary = SQUEEZ_BIN) {
-  // Fire-and-forget — don't block the tool pipeline.
+export function trackResult(tool, squeezBinary = SQUEEZ_BIN, payload, spawnImpl = spawn) {
+  // Fire-and-forget — don't block the tool pipeline. The observer reads
+  // stdin to completion and no-ops on an empty payload, so tracking without a
+  // payload stays a silent no-op (legacy callers unchanged); a payload must be
+  // piped and EOF'd for the observer to record anything.
   try {
-    spawn(squeezBinary, ["track-result", tool], {
-      stdio: "ignore",
+    const json = payload === undefined ? undefined : JSON.stringify(payload);
+    const child = spawnImpl(squeezBinary, ["track-result", tool], {
+      stdio: json === undefined ? "ignore" : ["pipe", "ignore", "ignore"],
       detached: true,
       windowsHide: true,
-    }).unref();
+    });
+    child.on("error", () => {});
+    if (child.stdin) {
+      child.stdin.on("error", () => {});
+      child.stdin.end(json);
+    }
+    child.unref();
   } catch {
     // best-effort
   }
@@ -334,6 +344,7 @@ export function createSetup({
   platform = process.platform,
   env = process.env,
   runSqueez,
+  trackResult: track = trackResult,
   exists = existsSync,
 } = {}) {
   const run = runSqueez || makeRunner(squeezBinary);
@@ -363,6 +374,17 @@ export function createSetup({
               if (initializedSessions.has(sid)) continue;
               initializedSessions.add(sid);
               run(["init", "--host=opencode"], 5000).catch(() => {});
+            } else if (/^shell\.exited(\.\d+)?$/.test(type)) {
+              // v2 shell is its own domain/aggregate: it never reaches
+              // ctx.tool hooks, so completions are observed on the bus.
+              // Payload has {id, exit?, status} only — do not invent fields.
+              const data = event.data;
+              if (!data || typeof data.id !== "string") continue;
+              if (!["exited", "timeout", "killed"].includes(data.status)) continue;
+              track("bash", squeezBinary, {
+                tool_name: "Bash", shell_id: data.id, shell_status: data.status,
+                ...(typeof data.exit === "number" ? { exit_code: data.exit } : {}),
+              });
             }
           }
         } catch {
@@ -408,12 +430,13 @@ export function createSetup({
         }
       });
 
-      // Post-execution tracking — v2 renamed bash → shell; map it back.
+      // Post-execution tracking — read/grep/glob only. Shell completions are
+      // owned by the shell.exited bus branch above: shell is its own domain on
+      // v2 and never reaches tool hooks, so keeping bash here could double-count.
       ctx.tool.hook("execute.after", (e) => {
         if (!e || !e.tool) return;
-        const tool = e.tool === "shell" ? "bash" : e.tool;
-        if (["bash", "read", "grep", "glob"].includes(tool)) {
-          trackResult(tool, squeezBinary);
+        if (["read", "grep", "glob"].includes(e.tool)) {
+          track(e.tool, squeezBinary);
         }
       });
     }
