@@ -343,13 +343,25 @@ export function createSetup({
     // squeez isn't on the machine. Hooks are simply absent.
     if (!squeezInstalled(squeezBinary, exists)) return;
 
-    // session.created → squeez init (event bus is an AsyncIterable; event
-    // names may carry a numeric suffix on some hosts).
+    // session.created (v1) / session.execution.started (v2) → squeez init.
+    // The event bus is an AsyncIterable; event names may carry a numeric
+    // suffix on some hosts. v2 renamed the event and fires it once per
+    // execution (per turn), so dedupe per session — init is once-per-session
+    // work. Without this alias the v2 host never initializes squeez, which
+    // also leaves track-result with no live session state.
     if (ctx.event && typeof ctx.event.subscribe === "function") {
+      const initializedSessions = new Set();
       (async () => {
         try {
           for await (const event of ctx.event.subscribe()) {
-            if (event && /^session\.created(\.\d+)?$/.test(String(event.type))) {
+            if (!event) continue;
+            const type = String(event.type);
+            if (/^session\.created(\.\d+)?$/.test(type)) {
+              run(["init", "--host=opencode"], 5000).catch(() => {});
+            } else if (/^session\.execution\.started(\.\d+)?$/.test(type)) {
+              const sid = (event.data && event.data.sessionID) || "";
+              if (initializedSessions.has(sid)) continue;
+              initializedSessions.add(sid);
               run(["init", "--host=opencode"], 5000).catch(() => {});
             }
           }

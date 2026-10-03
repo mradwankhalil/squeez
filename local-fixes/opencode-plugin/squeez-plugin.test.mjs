@@ -1,7 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import {
+import { existsSync, readFileSync } from "node:fs";
+// This test file runs from two layouts: the ledger keeps it next to
+// squeez.js; the installed copy lives in <profile>/tests/ with the plugin in
+// <profile>/plugins/. Resolve whichever layout we are in.
+const PLUGIN_SPEC = existsSync(new URL("./squeez.js", import.meta.url))
+  ? "./squeez.js"
+  : "../plugins/squeez.js";
+const {
   buildWrappedCommand,
   buildWslSupervisorScript,
   createHooks,
@@ -14,7 +20,7 @@ import {
   resolveWrapTimeoutSecs,
   shouldWrapTool,
   squeezInstalled,
-} from "../plugins/squeez.js";
+} = await import(PLUGIN_SPEC);
 
 test("resolves the Windows Squeez executable", () => {
   assert.equal(
@@ -249,7 +255,7 @@ test("retries a failed budget lookup once, does not cache a failure, never throw
 });
 
 test("the plugin source never starts a child process synchronously", () => {
-  const source = readFileSync(new URL("../plugins/squeez.js", import.meta.url), "utf8");
+  const source = readFileSync(new URL(PLUGIN_SPEC, import.meta.url), "utf8");
   const code = source.split("\n").filter((line) => !line.trimStart().startsWith("//")).join("\n");
   assert.doesNotMatch(code, /\b(execSync|execFileSync|spawnSync)\b/);
 });
@@ -271,7 +277,7 @@ function fakeCtx() {
 }
 
 test("the default export exposes both entry points", async () => {
-  const mod = await import("../plugins/squeez.js");
+  const mod = await import(PLUGIN_SPEC);
   assert.equal(mod.default.id, "squeez");
   assert.equal(typeof mod.default.setup, "function");
   assert.equal(typeof mod.default.server, "function");
@@ -347,4 +353,21 @@ test("v2 setup runs init on session.created, tolerant of a numeric suffix", asyn
   createSetup({ exists: () => true, runSqueez: async (args) => { calls.push(args.join(" ")); return ""; } })(ctx);
   await new Promise((r) => setTimeout(r, 20));
   assert.deepEqual(calls, ["init --host=opencode"]);
+});
+
+
+test("v2 setup runs init once per session on session.execution.started", async () => {
+  const calls = [];
+  const ctx = {
+    event: {
+      subscribe: () => (async function* () {
+        yield { type: "session.execution.started", data: { sessionID: "s1" } };
+        yield { type: "session.execution.started", data: { sessionID: "s1" } };
+        yield { type: "session.execution.started", data: { sessionID: "s2" } };
+      })(),
+    },
+  };
+  createSetup({ exists: () => true, runSqueez: async (args) => { calls.push(args.join(" ")); return ""; } })(ctx);
+  await new Promise((r) => setTimeout(r, 20));
+  assert.deepEqual(calls, ["init --host=opencode", "init --host=opencode"]);
 });
