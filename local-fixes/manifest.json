@@ -49,6 +49,8 @@
       "target": "C:/Users/Zephyrus/.opencode-v2/config/opencode/plugins/squeez.js",
       "source": "local-fixes/opencode-plugin/squeez.js",
       "markers": ["-EncodedCommand", "taskkill /F /T /PID", "windowsHide: true", "export default {", "resolveShellFamily", "squeezInstalled", "ctx.shell.hook", "createSetup", "shell_status", "child.stdin.end"],
+      "tests": "C:/Users/Zephyrus/.opencode-v2/config/opencode/tests/squeez-plugin.test.mjs",
+      "testsSource": "local-fixes/opencode-plugin/squeez-plugin.test.mjs",
       "clobberedBy": ["squeez setup --host=opencode under the v2 launcher (XDG_CONFIG_HOME pointed at the v2 profile)"],
       "upstream": [
         { "ref": "claudioemmanuel/squeez#242", "url": "https://github.com/claudioemmanuel/squeez/pull/242", "covers": "dual export for OpenCode 2.x; this overlay merges it with the owner overlays instead of waiting", "state": "open PR" },

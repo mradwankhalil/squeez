@@ -264,7 +264,7 @@ export function verificationChecks(ctx) {
       checks.push([`overlay opencode-plugin: installed plugin byte-identical to ${o.source}`, () => existsSync(o.target) && readFileSync(o.target).equals(readFileSync(resolve(repoRoot, o.source)))]);
       checks.push(['overlay opencode-plugin: markers ' + o.markers.join(' | '), () => o.markers.every(k => readFileSync(o.target, 'utf8').includes(k))]);
       if (o.testsSource) checks.push([`overlay opencode-plugin: installed tests byte-identical to ${o.testsSource}`, () => ledgerFileState(o.tests, resolve(repoRoot, o.testsSource)) === 'ok']);
-      checks.push(['overlay opencode-plugin: installed plugin tests pass (floor 18, all pass)', () => pluginTestsPass(o.tests)]);
+      checks.push(['overlay opencode-plugin: installed plugin tests pass (floor 30, all pass)', () => pluginTestsPass(o.tests)]);
     } else if (o.id === 'copilot-hooks') {
       checks.push(['overlay copilot-hooks: squeez hooks under hooks.<Event>, forward-slash paths, no top-level keys', () => !existsSync(o.target) || copilotSettingsOk(JSON.parse(readFileSync(o.target, 'utf8')))]);
     } else if (o.id === 'codex-hooks-off') {
@@ -273,6 +273,8 @@ export function verificationChecks(ctx) {
     } else if (o.id === 'opencode-plugin-v2') {
       checks.push([`overlay opencode-plugin-v2: installed plugin byte-identical to ${o.source}`, () => existsSync(o.target) && readFileSync(o.target).equals(readFileSync(resolve(repoRoot, o.source)))]);
       checks.push(['overlay opencode-plugin-v2: markers ' + o.markers.join(' | '), () => o.markers.every(k => readFileSync(o.target, 'utf8').includes(k))]);
+      if (o.testsSource) checks.push([`overlay opencode-plugin-v2: installed tests byte-identical to ${o.testsSource}`, () => ledgerFileState(o.tests, resolve(repoRoot, o.testsSource)) === 'ok']);
+      if (o.testsSource) checks.push(['overlay opencode-plugin-v2: installed plugin tests pass (floor 30, all pass)', () => pluginTestsPass(o.tests)]);
     }
   }
   for (const [file, keys] of Object.entries(m.config)) {
@@ -306,9 +308,10 @@ export function verificationChecks(ctx) {
 export function pluginTestsPass(testPath) {
   const r = run(process.execPath, ['--test', '--test-reporter=tap', testPath], 120000);
   const n = label => Number(r.out.match(new RegExp(`^# ${label} (\\d+)\\s*$`, 'm'))?.[1]);
-  // Floor of 18 guards a silent discovery failure (import error → 0 tests); the
-  // suite grows as overlays accrete (24 since the v2 setup() merge, 2026-10-02).
-  return n('tests') >= 18 && n('pass') === n('tests') && n('fail') === 0 && n('skipped') === 0;
+  // Floor of 30 guards a silent discovery failure (import error → 0 tests); the
+  // suite grows as overlays accrete (30 since the #247 shell.exited/track-result
+  // fix, 2026-10-03 — was 24 after the v2 setup() merge, 18 before that).
+  return n('tests') >= 30 && n('pass') === n('tests') && n('fail') === 0 && n('skipped') === 0;
 }
 
 export function checkAll(checks, log = console.log) {
@@ -360,10 +363,15 @@ export function reapplyOverlay(o, ctx) {
   }
   if (o.id === 'opencode-plugin-v2') {
     const source = readFileSync(resolve(repoRoot, o.source));
-    if (existsSync(o.target) && readFileSync(o.target).equals(source)) return 'PASS opencode-plugin-v2 already the merged plugin';
+    // The plugin's tests are installed at the v2 profile too; the ledger copy
+    // is their source of truth, same as the v1 overlay.
+    const testsSource = o.testsSource ? resolve(repoRoot, o.testsSource) : null;
+    const testsDrifted = testsSource !== null && ledgerFileState(o.tests, testsSource) !== 'ok';
+    const tb = testsDrifted ? restoreLedgerFile(o.tests, testsSource) : null;
+    const testsNote = testsDrifted ? `; its tests restored from the ledger (backup ${tb ?? 'none'})` : '';
+    if (existsSync(o.target) && readFileSync(o.target).equals(source)) return `PASS opencode-plugin-v2 already the merged plugin${testsNote}`;
     const b = existsSync(o.target) ? backup(o.target) : null;
     writeFileSync(o.target, source);
-    // No tests live at the v2 profile — the marker set is the shape gate.
     const installed = readFileSync(o.target, 'utf8');
     const missing = (o.markers ?? []).filter((mk) => !installed.includes(mk));
     if (missing.length) {
@@ -371,7 +379,11 @@ export function reapplyOverlay(o, ctx) {
       else renameSync(o.target, `${o.target}.failed-${stamp()}`);
       throw new PromoteError(`opencode-plugin-v2 markers missing after re-apply (${missing.join(', ')}); previous file restored`);
     }
-    return `PASS opencode-plugin-v2 re-applied (backup ${b ?? 'none'})`;
+    if (testsSource && !pluginTestsPass(o.tests)) {
+      if (b) copyFileSync(b, o.target);
+      throw new PromoteError(`opencode-plugin-v2 tests failed after re-apply; previous plugin restored from ${b}`);
+    }
+    return `PASS opencode-plugin-v2 re-applied (backup ${b ?? 'none'})${testsNote}`;
   }
   throw new PromoteError(`unknown overlay ${o.id}`);
 }
