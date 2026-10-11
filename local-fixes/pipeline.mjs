@@ -198,10 +198,16 @@ export const staleServers = (procs, pluginMtimeMs) => procs.filter(p => p.starte
 export const BINARY_FIX_STATES = ['staged', 'live'];
 export const binaryHasFix = (bytes, fix) => fix.markers.every(marker => bytes.includes(marker));
 export const liveBinaryFixes = manifest => (manifest.binaryFixes ?? []).filter(f => f.state === 'live');
+export const binaryPromotionBlockers = (manifest, bytes) => (manifest.binaryFixes ?? [])
+  .filter(f => f.state === 'live' || binaryHasFix(bytes, f)).map(f => f.id);
 export function binaryFixCheck(bytes, fix) {
+  if (fix.state === 'live') return binaryHasFix(bytes, fix) && artifactMatches(bytes, fix.staged);
   if (binaryHasFix(bytes, fix)) return true;
-  return fix.state === 'live' ? false : 'skip:staged, not activated yet (owner swaps the binary; then set state to live)';
+  return 'skip:staged, not activated yet (owner swaps the binary; then set state to live)';
 }
+export const artifactMatches = (bytes, artifact) => Boolean(artifact)
+  && bytes.length === artifact.bytes
+  && createHash('sha256').update(bytes).digest('hex') === artifact.sha256;
 
 // ---------- context and side-effecting steps ----------
 
@@ -265,7 +271,7 @@ export function verificationChecks(ctx) {
     ['binary exists and is PE subsystem 3 (CONSOLE)', () => existsSync(bin) && readSubsystem(readFileSync(bin)) === 3],
     ['binary SHA-256 equals the official release checksum', () => {
       const live = liveBinaryFixes(m);
-      if (live.length && live.every(f => binaryHasFix(readFileSync(bin), f))) return `skip:locally built binary carrying ${live.map(f => f.id).join(', ')} (an official checksum cannot match)`;
+      if (live.length && live.every(f => binaryFixCheck(readFileSync(bin), f) === true)) return `skip:locally built binary carrying ${live.map(f => f.id).join(', ')} (an official checksum cannot match)`;
       const t = tag(); if (!t) return false;
       const expected = officialChecksum(m.upstream.repo, t, m.upstream.asset);
       return expected === null ? 'skip:could not fetch checksums.sha256 (offline or gh not authenticated)' : expected === sha256File(bin);
@@ -275,6 +281,13 @@ export function verificationChecks(ctx) {
       () => existsSync(a.target) && normalizeEol(readFileSync(a.target)) === normalizeEol(tagTemplate(tag(), a.template))]),
   ];
   for (const f of m.binaryFixes ?? []) checks.push([`binary fix ${f.id} (${f.state}): ${f.markers.join(' | ')}`, () => existsSync(bin) && binaryFixCheck(readFileSync(bin), f)]);
+  for (const f of m.binaryFixes ?? []) if (f.state === 'staged') checks.push([
+    `staged artifact ${f.id}: SHA-256, bytes, PE console subsystem and markers`, () => {
+      if (!f.staged?.path || !existsSync(f.staged.path)) return false;
+      const bytes = readFileSync(f.staged.path);
+      return artifactMatches(bytes, f.staged) && binaryHasFix(bytes, f) && readSubsystem(bytes) === 3;
+    },
+  ]);
   for (const o of m.overlays) {
     if (o.id === 'opencode-plugin') {
       checks.push([`overlay opencode-plugin: installed plugin byte-identical to ${o.source}`, () => existsSync(o.target) && readFileSync(o.target).equals(readFileSync(resolve(repoRoot, o.source)))]);

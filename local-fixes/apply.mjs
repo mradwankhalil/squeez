@@ -1,13 +1,17 @@
 // Promote squeez the normal way, then re-apply the owner overlays upstream does not ship yet.
 //   node local-fixes/apply.mjs             dry-run: current health + the plan (writes nothing)
 //   node local-fixes/apply.mjs --apply     squeez update -> setup (safe hosts) -> overlays + config -> verify
-import { existsSync } from 'node:fs';
-import { PromoteError, checkAll, ensureTag, liveBinaryFixes, loadContext, parseArgs, reapplyConfig, reapplyOmoExclusion, reapplyOverlay, run, verificationChecks, versionTag } from './pipeline.mjs';
+import { existsSync, readFileSync } from 'node:fs';
+import { PromoteError, binaryPromotionBlockers, checkAll, ensureTag, loadContext, parseArgs, reapplyConfig, reapplyOmoExclusion, reapplyOverlay, run, verificationChecks, versionTag } from './pipeline.mjs';
 
 try {
   const { apply } = parseArgs(process.argv.slice(2));
   const ctx = loadContext();
   const m = ctx.manifest;
+  const blockers = binaryPromotionBlockers(m, existsSync(m.binary) ? readFileSync(m.binary) : Buffer.alloc(0));
+  if (apply) {
+    if (blockers.length) throw new PromoteError(`squeez update would replace the locally built binary carrying ${blockers.join(', ')}; rebuild the fork on the new tag and swap it by hand, or retire the fix first; nothing was changed`);
+  }
   const installed = versionTag(run(m.binary, ['--version'], 20000).out);
   const check = run(m.binary, ['update', '--check'], 60000);
   console.log(`INFO installed ${installed ?? 'unknown'}; ${check.out.trim().split(/\r?\n/).pop()}`);
@@ -19,15 +23,15 @@ try {
     console.log('\nPLAN (--apply):');
     console.log('  1. squeez update            official release, checksums.sha256 verified, running exe swapped by rename, Claude hooks refreshed');
     console.log(`  2. squeez setup --host=...  ${hosts.join(', ')}  (never: ${Object.keys(m.neverSetupHosts).join(', ')})`);
-    for (const f of m.binaryFixes ?? []) console.log(`  0. binary fix ${f.id} (${f.state}): ${f.state === 'live' ? '--apply STOPS before squeez update (it would install the stock binary)' : 'staged only; squeez update is not blocked'}`);
+    for (const f of m.binaryFixes ?? []) console.log(`  0. binary fix ${f.id} (${f.state}): ${blockers.includes(f.id) ? '--apply STOPS before squeez update (it would install the stock binary)' : 'staged only; squeez update is not blocked'}`);
     for (const o of m.overlays) console.log(`  3. overlay ${o.id}: re-apply only if drifted  [${o.upstream.map(u => u.ref).join(', ')}]`);
     console.log('  4. config values re-applied only if drifted (backup first)');
     console.log('  5. omo exclusion of the Claude squeez PreToolUse hook: written only when no OpenCode server predates the plugin');
     console.log('  6. full verification; any FAIL exits 1');
   } else {
     // squeez update installs the stock release: it would silently remove every live binary fix.
-    const live = liveBinaryFixes(m);
-    if (live.length) throw new PromoteError(`squeez update would replace the locally built binary carrying ${live.map(f => f.id).join(', ')}; rebuild the fork on the new tag and swap it by hand, or retire the fix first (skill mk-squeez-promote, "Binary fixes"); nothing was changed`);
+    // Guard ran before any binary command, including update --check. It also
+    // covers the swap -> state=live window and a locally built but wrong hash.
     const u = run(m.binary, ['update'], 300000);
     u.out.trim().split(/\r?\n/).forEach(l => console.log(`     ${l}`));
     if (u.code !== 0) throw new PromoteError('squeez update failed; nothing else was changed');

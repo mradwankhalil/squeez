@@ -29,19 +29,21 @@
       "state": "staged",
       "what": "Every host adapter rewrote its instruction file (CLAUDE.md, the OpenCode and Codex AGENTS.md, GEMINI.md, copilot-instructions.md, SOUL.md, the Pi SKILL.md) with read_to_string(..).unwrap_or_default() followed by a plain truncating fs::write. Two `squeez init` runs in the same moment: one read the file while the other had it truncated, took it for empty and wrote the squeez block alone. That wiped the owner rules from the OpenCode v2 AGENTS.md on 2026-10-10T01:17Z (16 KB down to 874 B). src/hosts/memory_file.rs now does the read-modify-write for all seven adapters: an existing file that cannot be read is an error, never empty; a result that drops text outside the squeez block is refused; the write is a temp file in the same directory renamed over the target; one writer at a time through an OS lock on the sibling .<name>.squeez-lock (released by the OS when its holder dies); and the file is re-read before the rename and left alone if it changed. Every refusal leaves the file untouched and is logged to %TEMP%/squeez-write-race-guard.log.",
       "markers": [
-        "WRITE_RACE_GUARD_V1"
+        "WRITE_RACE_GUARD_V1",
+        "WRITE_RACE_REVIEW_V2"
       ],
       "source": "C:/Users/Zephyrus/Documents/ai/squeez, branch local/write-race-guard-1.48.18 (v1.48.18 merged into feat/opencode-wrap-guard; local only, not pushed): src/hosts/memory_file.rs and the seven adapters in src/hosts/",
       "tests": "cargo test --lib hosts::memory_file (unit + in-process race, including the pre-fix code path losing the rules); cargo test --test test_write_race (real `squeez init --host=opencode` processes; set SQUEEZ_LEGACY_BIN to a stock binary to watch it lose them)",
+      "review": "4f89287: redact owner text in refusals, reject ambiguous markers, compare after fsync and before every rename retry, preserve unowned temp collisions, refuse readonly targets, create Unix temps privately and propagate chmod errors. Review proof includes an external writer during rename retry, killed process mid-write, 10 MB BOM/Unicode/CRLF, readonly targets, corrupted markers and literal shell paths. Detected errors fail closed; an uncooperative writer can still race the final compare and rename. Network/sync-provider semantics, ACL/xattr preservation and power-loss durability are not proven. compress-md remains a separate unguarded write path: keep auto_compress_md=false.",
       "staged": {
-        "path": "C:/Users/Zephyrus/Documents/ai/storage/squeez-write-race-fix-20261011T204221Z/staged/squeez.exe",
-        "sha256": "c66e5eb2556fd74eceea1fdacdc36ea6cbd8ee3444044fc5003c781f23f07368",
-        "bytes": 2385408,
+        "path": "C:/Users/Zephyrus/Documents/ai/storage/squeez-review-gate-20261011T214733Z/staged/squeez.exe",
+        "sha256": "8eb9be745d46895d7371cc56227d5a620f35ac61a1644d2bf87d2b597ec0c300",
+        "bytes": 2390528,
         "base": "v1.48.18",
-        "commit": "c9e2c21 on local/write-race-guard-1.48.18 (454e732 state dir, c4dd0b2 write-race guard, b0d3ca4 Windows test fixes, c9e2c21 benchmark)",
+        "commit": "4f89287 on local/write-race-guard-1.48.18 (includes 454e732, c4dd0b2, b0d3ca4, c9e2c21; independent adversarial-review hardening)",
         "verifyBy": "this sha256 only: the release build is not byte-reproducible, a rebuild of the same commit has a different hash",
-        "alsoContains": "c9e2c21 fix(benchmark): the wrap scenarios run on Windows (find_binary matched `squeez`, not `squeez.exe`). Benchmark subcommand only; no marker and no entry of its own, because nothing in a session depends on it and losing it to `squeez update` costs nothing",
-        "previous": { "path": "C:/Users/Zephyrus/Documents/ai/storage/squeez-write-race-fix-20261011T204221Z/staged/squeez.exe.prev-aa424f16", "sha256": "aa424f16d0df9b77c7baa05fecc50ff5b9fd25a80900814d8eaf71a5c50eac1c", "note": "first staged build, same two fixes without the benchmark fix; kept for rollback" },
+        "alsoContains": "c9e2c21 Windows benchmark discovery plus 4f89287 shell quoting, extended UNC handling, and Unix backslash preservation. Exact SHA-256 binds these changes; no separate benchmark marker.",
+        "previous": { "path": "C:/Users/Zephyrus/Documents/ai/storage/squeez-write-race-fix-20261011T204221Z/staged/squeez.exe", "sha256": "c66e5eb2556fd74eceea1fdacdc36ea6cbd8ee3444044fc5003c781f23f07368", "note": "pre-review staged build, retained unchanged; squeez.exe.prev-aa424f16 remains beside it as an older rollback" },
         "replaces": "C:/Users/Zephyrus/.claude/squeez/bin/squeez.exe (stock 1.48.18, sha256 3e01cc8d53ff45d1a21ca0cef53fa53a1ae6a1571eb5bfeccf7fd05f5c4e29fd)"
       },
       "clobberedBy": [
@@ -61,14 +63,14 @@
       ],
       "source": "C:/Users/Zephyrus/Documents/ai/squeez, branch local/write-race-guard-1.48.18 (v1.48.18 merged into feat/opencode-wrap-guard; local only, not pushed): src/hosts/opencode.rs (state_dir) and opencode-plugin/squeez.js (marker comment)",
       "staged": {
-        "path": "C:/Users/Zephyrus/Documents/ai/storage/squeez-write-race-fix-20261011T204221Z/staged/squeez.exe",
-        "sha256": "c66e5eb2556fd74eceea1fdacdc36ea6cbd8ee3444044fc5003c781f23f07368",
-        "bytes": 2385408,
+        "path": "C:/Users/Zephyrus/Documents/ai/storage/squeez-review-gate-20261011T214733Z/staged/squeez.exe",
+        "sha256": "8eb9be745d46895d7371cc56227d5a620f35ac61a1644d2bf87d2b597ec0c300",
+        "bytes": 2390528,
         "base": "v1.48.18",
-        "commit": "c9e2c21 on local/write-race-guard-1.48.18 (454e732 state dir, c4dd0b2 write-race guard, b0d3ca4 Windows test fixes, c9e2c21 benchmark)",
+        "commit": "4f89287 on local/write-race-guard-1.48.18 (includes 454e732, c4dd0b2, b0d3ca4, c9e2c21; independent adversarial-review hardening)",
         "verifyBy": "this sha256 only: the release build is not byte-reproducible, a rebuild of the same commit has a different hash",
-        "alsoContains": "c9e2c21 fix(benchmark): the wrap scenarios run on Windows (find_binary matched `squeez`, not `squeez.exe`). Benchmark subcommand only; no marker and no entry of its own, because nothing in a session depends on it and losing it to `squeez update` costs nothing",
-        "previous": { "path": "C:/Users/Zephyrus/Documents/ai/storage/squeez-write-race-fix-20261011T204221Z/staged/squeez.exe.prev-aa424f16", "sha256": "aa424f16d0df9b77c7baa05fecc50ff5b9fd25a80900814d8eaf71a5c50eac1c", "note": "first staged build, same two fixes without the benchmark fix; kept for rollback" },
+        "alsoContains": "c9e2c21 Windows benchmark discovery plus 4f89287 shell quoting, extended UNC handling, and Unix backslash preservation. Exact SHA-256 binds these changes; no separate benchmark marker.",
+        "previous": { "path": "C:/Users/Zephyrus/Documents/ai/storage/squeez-write-race-fix-20261011T204221Z/staged/squeez.exe", "sha256": "c66e5eb2556fd74eceea1fdacdc36ea6cbd8ee3444044fc5003c781f23f07368", "note": "pre-review staged build, retained unchanged; squeez.exe.prev-aa424f16 remains beside it as an older rollback" },
         "replaces": "C:/Users/Zephyrus/.claude/squeez/bin/squeez.exe (stock 1.48.18, sha256 3e01cc8d53ff45d1a21ca0cef53fa53a1ae6a1571eb5bfeccf7fd05f5c4e29fd)"
       },
       "clobberedBy": [
@@ -108,7 +110,7 @@
       "what": "The same merged plugin installed to the OpenCode v2 profile as a config-dir drop. One file, two entry points: server() for v1 and setup(ctx) for v2 — the v2 path registers on ctx.shell/ctx.tool/ctx.event with the wrapper following the shell each create.before event carries (#244), no synchronous spawns (#245/#246), async budget injection with a 60 s cache, the WSL supervisor on PowerShell shells (#239), and the win32+bash outside-envelope guard (#261: per-call log + watchdog tree-kill via /proc/<pid>/winpid at ceiling+15s, kill-switch <tmpdir>/squeez-wrap-guard.OFF, 7000-char plain-wrap fallback for #262). This is the migration-dossier §3.6 merge of PR #242's dual export with the owner overlays. It also tracks shell completions via the shell.exited bus event with a real stdin payload (track-result was a silent no-op on empty stdin everywhere) and restores per-session init via the session.execution.started alias with per-session dedupe (#247, PR #242 commit 4d2a0f3); v2 execute.after is restricted to read/grep/glob so shell is never double-counted.",
       "target": "C:/Users/Zephyrus/.opencode-v2/config/opencode/plugins/squeez.js",
       "source": "local-fixes/opencode-plugin/squeez.js",
-      "markers": ["-EncodedCommand", "taskkill /F /T /PID", "windowsHide: true", "export default {", "resolveShellFamily", "squeezInstalled", "ctx.shell.hook", "createSetup", "shell_status", "child.stdin.end", "__sqz_guard_v1", "STATE_OUTSIDE_WATCHED_CONFIG_V1"],
+      "markers": ["-EncodedCommand", "taskkill /F /T /PID", "windowsHide: true", "export default {", "resolveShellFamily", "squeezInstalled", "ctx.shell.hook", "createSetup", "shell_status", "child.stdin.end", "__sqz_guard_v1"],
       "tests": "C:/Users/Zephyrus/.opencode-v2/config/opencode/tests/squeez-plugin.test.mjs",
       "testsSource": "local-fixes/opencode-plugin/squeez-plugin.test.mjs",
       "clobberedBy": ["squeez setup --host=opencode under the v2 launcher (XDG_CONFIG_HOME pointed at the v2 profile)"],
@@ -154,12 +156,14 @@
     "C:/Users/Zephyrus/.gemini/squeez/config.ini": { "auto_compress_md": "false" },
     "C:/Users/Zephyrus/.copilot/squeez/config.ini": { "auto_compress_md": "false" },
     "C:/Users/Zephyrus/.pi/agent/squeez/config.ini": { "auto_compress_md": "false" },
-    "C:/Users/Zephyrus/.opencode-v2/config/opencode/squeez/config.ini": { "auto_compress_md": "false" }
+    "C:/Users/Zephyrus/.opencode-v2/config/opencode/squeez/config.ini": { "auto_compress_md": "false" },
+    "C:/Users/Zephyrus/AppData/Local/squeez/opencode/config.ini": { "auto_compress_md": "false" }
   },
   "configRequiredWhen": {
     "C:/Users/Zephyrus/.claude/squeez/config.ini": "C:/Users/Zephyrus/.claude/squeez/hooks/session-start.sh",
     "C:/Users/Zephyrus/.config/opencode/squeez/config.ini": "C:/Users/Zephyrus/.config/opencode/plugins/squeez.js",
-    "C:/Users/Zephyrus/.opencode-v2/config/opencode/squeez/config.ini": "C:/Users/Zephyrus/.opencode-v2/config/opencode/plugins/squeez.js"
+    "C:/Users/Zephyrus/.opencode-v2/config/opencode/squeez/config.ini": "C:/Users/Zephyrus/.opencode-v2/config/opencode/plugins/squeez.js",
+    "C:/Users/Zephyrus/AppData/Local/squeez/opencode/config.ini": "C:/Users/Zephyrus/.opencode-v2/config/opencode/plugins/squeez.js"
   },
   "configWhy": {
     "wrap_timeout_secs": "owner value 540 (default 360); related to #239",

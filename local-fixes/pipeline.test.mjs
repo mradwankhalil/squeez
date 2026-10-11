@@ -5,6 +5,7 @@ import * as p from './pipeline.mjs';
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createHash } from 'node:crypto';
 
 function pe(subsystem = 3, { optionalSize = 240, magic = 0x20b } = {}) {
   const b = Buffer.alloc(512);
@@ -156,7 +157,8 @@ test('real manifest: every required config is also a managed config and pins aut
 test('binary fix: a staged fix is SKIP until its markers are in the binary; a live fix without them FAILS', () => {
   const stock = Buffer.concat([pe(), Buffer.from('squeez 1.48.18 stock')]);
   const built = Buffer.concat([pe(), Buffer.from('squeez WRITE_RACE_GUARD_V1: left untouched')]);
-  const fix = state => ({ id: 'write-race-guard', markers: ['WRITE_RACE_GUARD_V1'], state });
+  const fix = state => ({ id: 'write-race-guard', markers: ['WRITE_RACE_GUARD_V1'], state,
+    staged: { sha256: createHash('sha256').update(built).digest('hex'), bytes: built.length } });
   assert.match(p.binaryFixCheck(stock, fix('staged')), /^skip:staged/);
   assert.equal(p.binaryFixCheck(built, fix('staged')), true);
   assert.equal(p.binaryFixCheck(built, fix('live')), true);
@@ -164,6 +166,55 @@ test('binary fix: a staged fix is SKIP until its markers are in the binary; a li
   assert.equal(p.binaryHasFix(built, { markers: ['WRITE_RACE_GUARD_V1', 'NOT_THERE'] }), false);
   assert.deepEqual(p.liveBinaryFixes({ binaryFixes: [fix('staged'), fix('live')] }).map(f => f.state), ['live']);
   assert.deepEqual(p.liveBinaryFixes({}), []);
+});
+
+test('live binary fix rejects a different binary even when all marker strings survive', () => {
+  const built = Buffer.concat([pe(), Buffer.from('WRITE_RACE_GUARD_V1')]);
+  const fix = { state: 'live', markers: ['WRITE_RACE_GUARD_V1'],
+    staged: { sha256: createHash('sha256').update(built).digest('hex'), bytes: built.length } };
+  assert.equal(p.binaryFixCheck(Buffer.concat([built, Buffer.from('changed')]), fix), false);
+  const modified = Buffer.from(built); modified[70] ^= 1;
+  assert.equal(p.binaryFixCheck(modified, fix), false);
+});
+
+test('promotion blocks a swapped-in binary even before its staged state becomes live', () => {
+  const fix = state => ({ id: 'guard', state, markers: ['WRITE_RACE_REVIEW_V2'] });
+  const built = Buffer.from('WRITE_RACE_REVIEW_V2');
+  assert.deepEqual(p.binaryPromotionBlockers({ binaryFixes: [fix('staged')] }, built), ['guard']);
+  assert.deepEqual(p.binaryPromotionBlockers({ binaryFixes: [fix('live')] }, Buffer.from('stock')), ['guard']);
+  assert.deepEqual(p.binaryPromotionBlockers({ binaryFixes: [fix('staged')] }, Buffer.from('stock')), []);
+});
+
+test('actual apply --apply aborts before any binary command when staged markers are already installed', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'squeez-review-apply-'));
+  try {
+    for (const name of ['pipeline.mjs', 'apply.mjs']) writeFileSync(join(dir, name), readFileSync(join(p.root, name)));
+    const { manifest } = p.loadContext();
+    manifest.binary = join(dir, 'not-an-executable.bin');
+    writeFileSync(manifest.binary, manifest.binaryFixes.flatMap(f => f.markers).join('\n'));
+    writeFileSync(join(dir, 'manifest.json'), JSON.stringify(manifest));
+    const result = p.run(process.execPath, [join(dir, 'apply.mjs'), '--apply']);
+    assert.equal(result.code, 1);
+    assert.match(result.out, /FAIL squeez update would replace the locally built binary carrying/);
+    assert.match(result.out, /nothing was changed/);
+    assert.doesNotMatch(result.out, /INFO installed|squeez update failed/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('staged artifact verification fails for missing or hash-mismatched artifact', () => {
+  const { manifest, home } = p.loadContext();
+  for (const staged of [
+    { path: join(tmpdir(), 'squeez-review-nonexistent-artifact.exe'), sha256: '0'.repeat(64), bytes: 1 },
+    { ...manifest.binaryFixes[0].staged, sha256: '0'.repeat(64) },
+  ]) {
+    const m = structuredClone(manifest); m.binaryFixes = [{ ...m.binaryFixes[0], staged }];
+    const check = p.verificationChecks({ manifest: m, home })
+      .find(([label]) => label.startsWith('staged artifact write-race-guard:'));
+    assert.ok(check, 'artifact verification missing');
+    assert.equal(check[1](), false);
+  }
 });
 
 test('real manifest: every binary fix names its markers, source, clobbering commands and a retire condition', () => {
