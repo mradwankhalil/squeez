@@ -137,13 +137,52 @@ test("wraps with POSIX quoting when the Windows shell is bash", () => {
     platform: "win32",
     shellFamily: "posix",
     squeezBinary: WIN_BIN,
+    guard: { ceilingSecs: 540, logPath: "C:/tmp/sqz-guard/t.log", killSwitch: "C:/tmp/no-such.off" },
   });
-  assert.equal(
-    wrapped,
-    "'C:/Users/Test/.claude/squeez/bin/squeez.exe' wrap 'cd /c/tmp && echo \"it'\\''s $HOME\" | grep -n '\\''a|b'\\'''",
-  );
+  // Outside-envelope guard (squeez #261): the inner wrap stays byte-identical.
+  const inner = "'C:/Users/Test/.claude/squeez/bin/squeez.exe' wrap 'cd /c/tmp && echo \"it'\\''s $HOME\" | grep -n '\\''a|b'\\'''";
+  assert.match(wrapped, /^# __sqz_guard_v1\n/);
+  assert.ok(wrapped.includes(`: >"$__sqz_l" 2>/dev/null || exec ${inner}`));
+  assert.ok(wrapped.includes(`${inner} >"$__sqz_l" 2>&1 </dev/null &`));
+  assert.ok(wrapped.includes("sleep 555 ")); // ceiling 540 + 15s skew
+  assert.ok(wrapped.includes("taskkill //F //T //PID"));
+  assert.ok(wrapped.includes("/proc/$__sqz_p/winpid"));
   assert.doesNotMatch(wrapped, /-EncodedCommand/);
   assert.doesNotMatch(wrapped, /^&/);
+});
+
+test("guard falls back to the plain wrap when the kill-switch file exists", () => {
+  const wrapped = buildWrappedCommand("echo hi", {
+    platform: "win32",
+    shellFamily: "posix",
+    squeezBinary: WIN_BIN,
+    guard: { exists: () => true },
+  });
+  assert.equal(wrapped, "'C:/Users/Test/.claude/squeez/bin/squeez.exe' wrap 'echo hi'");
+});
+
+test("guard falls back to the plain wrap past the argv length guard", () => {
+  const command = "echo " + "x".repeat(6900);
+  const wrapped = buildWrappedCommand(command, {
+    platform: "win32",
+    shellFamily: "posix",
+    squeezBinary: WIN_BIN,
+    guard: { ceilingSecs: 540, logPath: "C:/tmp/sqz-guard/t.log", killSwitch: "C:/tmp/no-such.off" },
+  });
+  assert.equal(wrapped, `'C:/Users/Test/.claude/squeez/bin/squeez.exe' wrap '${command}'`);
+});
+
+test("guard watchdog tracks the resolved ceiling with a 15s skew", () => {
+  const at540 = buildWrappedCommand("echo hi", {
+    platform: "win32", shellFamily: "posix", squeezBinary: WIN_BIN,
+    guard: { ceilingSecs: 540, logPath: "C:/tmp/sqz-guard/t.log", killSwitch: "C:/tmp/no-such.off" },
+  });
+  assert.ok(at540.includes("sleep 555 "));
+  const at360 = buildWrappedCommand("echo hi", {
+    platform: "win32", shellFamily: "posix", squeezBinary: WIN_BIN,
+    guard: { ceilingSecs: 360, logPath: "C:/tmp/sqz-guard/t.log", killSwitch: "C:/tmp/no-such.off" },
+  });
+  assert.ok(at360.includes("sleep 375 "));
 });
 
 test("leaves wsl commands unwrapped under bash so the host timeout bounds them", () => {
@@ -159,6 +198,7 @@ test("recognises a command that is already wrapped, in either form", () => {
   const posix = buildWrappedCommand("echo hi", { platform: "win32", shellFamily: "posix", squeezBinary: WIN_BIN });
   assert.equal(isAlreadyWrapped(ps), true);
   assert.equal(isAlreadyWrapped(posix), true);
+  assert.ok(posix.includes("__sqz_guard_v1")); // guard form carries the sentinel
   assert.equal(isAlreadyWrapped("/home/u/.claude/squeez/bin/squeez wrap 'ls'"), true);
   assert.equal(isAlreadyWrapped("squeez wrap ls"), true);
   assert.equal(isAlreadyWrapped("echo hi"), false);
@@ -175,10 +215,12 @@ test("the before-hook follows the shell the config hook reports", async () => {
   await hooks.config({ shell: "bash" });
   const second = { args: { command: "echo hi" } };
   await hooks["tool.execute.before"]({ tool: "bash" }, second);
-  assert.equal(second.args.command, "'C:/Users/Test/.claude/squeez/bin/squeez.exe' wrap 'echo hi'");
+  assert.match(second.args.command, /^# __sqz_guard_v1\n/);
+  assert.ok(second.args.command.includes("'C:/Users/Test/.claude/squeez/bin/squeez.exe' wrap 'echo hi'"));
+  const guardedOnce = second.args.command;
 
   await hooks["tool.execute.before"]({ tool: "bash" }, second);
-  assert.equal(second.args.command, "'C:/Users/Test/.claude/squeez/bin/squeez.exe' wrap 'echo hi'");
+  assert.equal(second.args.command, guardedOnce); // sentinel: no double-wrap
 
   const bypass = { args: { command: "--no-squeez echo hi" } };
   await hooks["tool.execute.before"]({ tool: "bash" }, bypass);
@@ -310,7 +352,8 @@ test("v2 setup wraps create.before with the shell the event carries", () => {
 
   const sh = { command: "echo hi", shell: "bash" };
   wrap(sh);
-  assert.equal(sh.command, "'C:/Users/Test/.claude/squeez/bin/squeez.exe' wrap 'echo hi'");
+  assert.match(sh.command, /^# __sqz_guard_v1\n/);
+  assert.ok(sh.command.includes("'C:/Users/Test/.claude/squeez/bin/squeez.exe' wrap 'echo hi'"));
 
   const wsl = { command: "wsl.exe -- ls", shell: "bash" };
   wrap(wsl);
