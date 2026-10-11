@@ -191,12 +191,25 @@ export function withCcPluginDisabled(text, event, pattern) {
 // A server that started before the plugin file was written still runs the previous plugin.
 export const staleServers = (procs, pluginMtimeMs) => procs.filter(p => p.startedMs < pluginMtimeMs);
 
+// ---------- binary fixes: a locally built squeez.exe carrying fixes upstream has not shipped ----------
+
+// `staged`: built and waiting for the owner's swap. `live`: installed; from then on a missing marker
+// means the binary was replaced (squeez update installs the stock release) and the fix is gone.
+export const BINARY_FIX_STATES = ['staged', 'live'];
+export const binaryHasFix = (bytes, fix) => fix.markers.every(marker => bytes.includes(marker));
+export const liveBinaryFixes = manifest => (manifest.binaryFixes ?? []).filter(f => f.state === 'live');
+export function binaryFixCheck(bytes, fix) {
+  if (binaryHasFix(bytes, fix)) return true;
+  return fix.state === 'live' ? false : 'skip:staged, not activated yet (owner swaps the binary; then set state to live)';
+}
+
 // ---------- context and side-effecting steps ----------
 
 export function loadContext() {
   const manifest = JSON.parse(readFileSync(join(root, 'manifest.json'), 'utf8'));
   requireThat(manifest.tool === 'squeez' && manifest.upstream?.repo === 'claudioemmanuel/squeez', 'invalid manifest');
   for (const o of manifest.overlays) requireThat(o.id && o.what && Array.isArray(o.upstream) && o.upstream.length && o.retireWhen, `overlay ${o.id ?? '?'} lacks id/what/upstream/retireWhen`);
+  for (const f of manifest.binaryFixes ?? []) requireThat(f.id && f.what && Array.isArray(f.markers) && f.markers.length && BINARY_FIX_STATES.includes(f.state) && f.retireWhen, `binary fix ${f.id ?? '?'} lacks id/what/markers/state/retireWhen`);
   return { manifest, home: process.env.USERPROFILE ?? process.env.HOME };
 }
 
@@ -251,6 +264,8 @@ export function verificationChecks(ctx) {
   const checks = [
     ['binary exists and is PE subsystem 3 (CONSOLE)', () => existsSync(bin) && readSubsystem(readFileSync(bin)) === 3],
     ['binary SHA-256 equals the official release checksum', () => {
+      const live = liveBinaryFixes(m);
+      if (live.length && live.every(f => binaryHasFix(readFileSync(bin), f))) return `skip:locally built binary carrying ${live.map(f => f.id).join(', ')} (an official checksum cannot match)`;
       const t = tag(); if (!t) return false;
       const expected = officialChecksum(m.upstream.repo, t, m.upstream.asset);
       return expected === null ? 'skip:could not fetch checksums.sha256 (offline or gh not authenticated)' : expected === sha256File(bin);
@@ -259,6 +274,7 @@ export function verificationChecks(ctx) {
     ...m.releaseAssets.map(a => [`${a.target.replace(home.replace(/\\/g, '/'), '~')} equals <installed tag>:${a.template}`,
       () => existsSync(a.target) && normalizeEol(readFileSync(a.target)) === normalizeEol(tagTemplate(tag(), a.template))]),
   ];
+  for (const f of m.binaryFixes ?? []) checks.push([`binary fix ${f.id} (${f.state}): ${f.markers.join(' | ')}`, () => existsSync(bin) && binaryFixCheck(readFileSync(bin), f)]);
   for (const o of m.overlays) {
     if (o.id === 'opencode-plugin') {
       checks.push([`overlay opencode-plugin: installed plugin byte-identical to ${o.source}`, () => existsSync(o.target) && readFileSync(o.target).equals(readFileSync(resolve(repoRoot, o.source)))]);

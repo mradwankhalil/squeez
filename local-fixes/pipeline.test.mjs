@@ -151,6 +151,36 @@ test('real manifest: every required config is also a managed config and pins aut
   }
 });
 
+// ---------- binary fixes (a locally built squeez.exe) ----------
+
+test('binary fix: a staged fix is SKIP until its markers are in the binary; a live fix without them FAILS', () => {
+  const stock = Buffer.concat([pe(), Buffer.from('squeez 1.48.18 stock')]);
+  const built = Buffer.concat([pe(), Buffer.from('squeez WRITE_RACE_GUARD_V1: left untouched')]);
+  const fix = state => ({ id: 'write-race-guard', markers: ['WRITE_RACE_GUARD_V1'], state });
+  assert.match(p.binaryFixCheck(stock, fix('staged')), /^skip:staged/);
+  assert.equal(p.binaryFixCheck(built, fix('staged')), true);
+  assert.equal(p.binaryFixCheck(built, fix('live')), true);
+  assert.equal(p.binaryFixCheck(stock, fix('live')), false);
+  assert.equal(p.binaryHasFix(built, { markers: ['WRITE_RACE_GUARD_V1', 'NOT_THERE'] }), false);
+  assert.deepEqual(p.liveBinaryFixes({ binaryFixes: [fix('staged'), fix('live')] }).map(f => f.state), ['live']);
+  assert.deepEqual(p.liveBinaryFixes({}), []);
+});
+
+test('real manifest: every binary fix names its markers, source, clobbering commands and a retire condition', () => {
+  const { manifest } = p.loadContext();
+  const fixes = manifest.binaryFixes ?? [];
+  assert.ok(fixes.some(f => f.markers.includes('WRITE_RACE_GUARD_V1')));
+  for (const f of fixes) {
+    assert.ok(p.BINARY_FIX_STATES.includes(f.state), f.id);
+    assert.ok(f.markers.every(mk => /^[A-Z0-9_]{8,}$/.test(mk)), f.id);
+    assert.ok(typeof f.source === 'string' && f.source.length > 20, f.id);
+    assert.ok(f.clobberedBy.includes('squeez update'), f.id);
+    assert.ok(f.retireWhen.length > 20, f.id);
+    assert.ok(f.upstream.every(u => /^https:\/\/github\.com\/[^/]+\/[^/]+\/(issues|pull)\/\d+$/.test(u.url)), f.id);
+    assert.ok(f.upstream.length > 0 || (typeof f.upstreamPending === 'string' && f.upstreamPending.length > 20), f.id);
+  }
+});
+
 // ---------- OMO Claude-hook exclusion (the squeez plugin, not Claude's pretooluse.sh, wraps under OpenCode) ----------
 
 test('cc-plugin config: detects, adds and preserves a disabled PreToolUse pattern', () => {

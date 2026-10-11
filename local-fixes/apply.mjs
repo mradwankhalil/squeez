@@ -2,7 +2,7 @@
 //   node local-fixes/apply.mjs             dry-run: current health + the plan (writes nothing)
 //   node local-fixes/apply.mjs --apply     squeez update -> setup (safe hosts) -> overlays + config -> verify
 import { existsSync } from 'node:fs';
-import { PromoteError, checkAll, ensureTag, loadContext, parseArgs, reapplyConfig, reapplyOmoExclusion, reapplyOverlay, run, verificationChecks, versionTag } from './pipeline.mjs';
+import { PromoteError, checkAll, ensureTag, liveBinaryFixes, loadContext, parseArgs, reapplyConfig, reapplyOmoExclusion, reapplyOverlay, run, verificationChecks, versionTag } from './pipeline.mjs';
 
 try {
   const { apply } = parseArgs(process.argv.slice(2));
@@ -19,11 +19,15 @@ try {
     console.log('\nPLAN (--apply):');
     console.log('  1. squeez update            official release, checksums.sha256 verified, running exe swapped by rename, Claude hooks refreshed');
     console.log(`  2. squeez setup --host=...  ${hosts.join(', ')}  (never: ${Object.keys(m.neverSetupHosts).join(', ')})`);
+    for (const f of m.binaryFixes ?? []) console.log(`  0. binary fix ${f.id} (${f.state}): ${f.state === 'live' ? '--apply STOPS before squeez update (it would install the stock binary)' : 'staged only; squeez update is not blocked'}`);
     for (const o of m.overlays) console.log(`  3. overlay ${o.id}: re-apply only if drifted  [${o.upstream.map(u => u.ref).join(', ')}]`);
     console.log('  4. config values re-applied only if drifted (backup first)');
     console.log('  5. omo exclusion of the Claude squeez PreToolUse hook: written only when no OpenCode server predates the plugin');
     console.log('  6. full verification; any FAIL exits 1');
   } else {
+    // squeez update installs the stock release: it would silently remove every live binary fix.
+    const live = liveBinaryFixes(m);
+    if (live.length) throw new PromoteError(`squeez update would replace the locally built binary carrying ${live.map(f => f.id).join(', ')}; rebuild the fork on the new tag and swap it by hand, or retire the fix first (skill mk-squeez-promote, "Binary fixes"); nothing was changed`);
     const u = run(m.binary, ['update'], 300000);
     u.out.trim().split(/\r?\n/).forEach(l => console.log(`     ${l}`));
     if (u.code !== 0) throw new PromoteError('squeez update failed; nothing else was changed');
