@@ -1,2 +1,3 @@
 opencode-plugin/squeez.js -text
 opencode-plugin/squeez-plugin.test.mjs -text
+buddy-english/** -text

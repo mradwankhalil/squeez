@@ -42,6 +42,7 @@ It **never** runs bare `squeez setup`, or `setup --host=opencode|codex|copilot`
 | `opencode-plugin` | Owner OpenCode plugin: the wrapper follows the OpenCode `shell` key, not the OS (PowerShell: `-EncodedCommand`; bash: POSIX quoting, forward-slash quoted binary); bounded WSL timeout under PowerShell (`taskkill /F /T`, exit 124), WSL left unwrapped under bash; no synchronous child processes (the first `execSync` of a hook call fails with a false `ETIMEDOUT` inside the server) | squeez #244, #239, #245 (PR #246); #242 for OpenCode 2.x | a release's plugin has both, checked by marker |
 | `copilot-hooks` | Copilot hooks under `hooks.<Event>` with forward-slash paths | squeez #243 | setup writes them there itself |
 | `codex-hooks-off` | No squeez hook in Codex; context-mode Codex plugin disabled (owner decision X-74/X-119) | openai/codex#49164 | a stable Codex with #49164 **and** an owner decision |
+| `buddy-english` | English translation of the buddy: 11 scripts under `~/.claude/squeez/buddy` and `~/.claude/commands/buddy.md` (source `buddy-english/`). Upstream ships them in Portuguese, including the block the session-start hook injects into every Claude Code session; `squeez update` and `setup --host=claude-code` restore the Portuguese templates | not filed yet: issue + PR drafted in `Documents/ai/storage/buddy-english-20261013/upstream/` (`manifest` key `upstreamPending`) | a release's `assets/buddy` templates are English (or follow `lang`); check `hooks/session-start.js` at the tag |
 
 Owner config (not patches): `wrap_timeout_secs = 540`, `context_window_tokens =
 1000000`, and `auto_compress_md = false` in all six host configs plus the
@@ -79,15 +80,36 @@ args in place. With that fix the Claude hook's own rewrite would take effect too
 it only knows the POSIX form and also compresses Task prompts, so the exclusion
 stays: the shell-aware plugin is the one wrapper under OpenCode.
 
-## What `verify.mjs` checks (28 checks on 2026-10-02)
+## What `verify.mjs` checks (31 checks on 2026-10-13)
 
 Binary is CONSOLE (PE subsystem 3) and its SHA-256 equals the official release
-checksum; `squeez doctor` has no `[FAIL]`; the Pi extension and 6 buddy files
-equal the installed tag's templates; each overlay is in place (the plugin is
+checksum (`SKIP` while a binary fix is `live`: then the binary must carry each fix's
+markers and be byte-for-byte the artifact recorded in `binaryFixes[].staged`); `squeez doctor` has no `[FAIL]`; the Pi extension equals the installed
+tag's template; the 12 buddy files equal the ledger's English translation (line
+endings aside) and their templates at the installed tag are still the ones the
+translation was made from; each overlay is in place (the plugin is
 byte-identical, has its markers, and passes its 18 tests, and the installed test file is byte-identical to the ledger copy `opencode-plugin/squeez-plugin.test.mjs`); every config value
 holds, and every required config file exists; the OMO exclusion is present (SKIP
 while an OpenCode restart is pending); and the four canonical instruction blocks
 are IN SYNC.
+
+## Binary fixes are live (2026-10-12)
+
+Both `manifest.binaryFixes` entries are `live`: the installed binary is the reviewed
+build of `4f89287` (SHA-256 `8eb9be74…c300`, 2,390,528 B). Activation record and
+rollback: `Documents/ai/storage/squeez-window-live-20261012/WINDOW-LOG.md`. While they
+are live, `apply.mjs --apply` stops before `squeez update`.
+
+`STATE_OUTSIDE_WATCHED_CONFIG_V1` is a **binary** marker. The owner plugin never
+carried it; the v2 overlay listed it by mistake until the review gate removed it
+(commit `2ba138e`). This working copy missed that commit until 2026-10-13, which is
+why verify failed that marker here: the check was stale, not the plugin.
+
+**The working copy can fall behind the branch.** `2ba138e` was committed from another
+worktree (`storage/squeez-review-gate-20261011T214733Z/ledger`) and never copied back.
+Before a snapshot, compare first: `git diff --stat local/fixes-ledger -- local-fixes`
+must show only your own changes. If the branch has commits this folder lacks, merge
+them in; a blind `rm -rf` + `cp -r` snapshot would revert them.
 
 ## Adding an overlay
 
@@ -96,7 +118,26 @@ file it first, then add an entry to `manifest.overlays` with `id`, `what`,
 `target`, `upstream[]` (URL + state) and `retireWhen`, implement its check in
 `verificationChecks` and its repair in `reapplyOverlay` (`pipeline.mjs`), and
 add a fixture test. The manifest test refuses an overlay without an upstream
-URL or a retire condition.
+URL or a retire condition. The one exception to "file it first": an overlay whose
+issue is drafted and waits for the owner's upstream batch carries `upstream: []`
+and `upstreamPending` (where the draft is), like a binary fix; replace it with
+the URLs once filed.
+
+### `buddy-english`: a translation is tied to the template it was made from
+
+`squeez update` and `squeez setup --host=claude-code` rewrite every buddy file
+from the templates embedded in the binary, so after each promotion the 12 files
+are Portuguese again and step 3 puts the translation back (backup of each file
+first). Each `files[]` entry records `baseSha256`, the SHA-256 of the template
+(LF line endings) the translation was made from, at `base`. When a release
+changes one of those templates, re-applying would silently undo upstream's
+change: `apply.mjs` then prints `DEFER buddy-english`, writes none of the 12
+files, and verify FAILs the "templates are the base" check. To fix: redo the
+translation on the new templates (the spec of the first one is
+`Documents/ai/storage/buddy-english-20261013/spec.json`), copy the result into
+`buddy-english/`, update `base` and each `baseSha256`, rerun `apply.mjs --apply`.
+The six `assets/buddy/lib` files left `releaseAssets` when this overlay was
+added; they go back when it retires.
 
 ## Retiring an overlay
 

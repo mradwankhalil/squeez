@@ -24,7 +24,7 @@ try {
     console.log('  1. squeez update            official release, checksums.sha256 verified, running exe swapped by rename, Claude hooks refreshed');
     console.log(`  2. squeez setup --host=...  ${hosts.join(', ')}  (never: ${Object.keys(m.neverSetupHosts).join(', ')})`);
     for (const f of m.binaryFixes ?? []) console.log(`  0. binary fix ${f.id} (${f.state}): ${blockers.includes(f.id) ? '--apply STOPS before squeez update (it would install the stock binary)' : 'staged only; squeez update is not blocked'}`);
-    for (const o of m.overlays) console.log(`  3. overlay ${o.id}: re-apply only if drifted  [${o.upstream.map(u => u.ref).join(', ')}]`);
+    for (const o of m.overlays) console.log(`  3. overlay ${o.id}: re-apply only if drifted  [${o.upstream.map(u => u.ref).join(', ') || 'upstream issue drafted, not filed'}]`);
     console.log('  4. config values re-applied only if drifted (backup first)');
     console.log('  5. omo exclusion of the Claude squeez PreToolUse hook: written only when no OpenCode server predates the plugin');
     console.log('  6. full verification; any FAIL exits 1');

@@ -214,7 +214,10 @@ export const artifactMatches = (bytes, artifact) => Boolean(artifact)
 export function loadContext() {
   const manifest = JSON.parse(readFileSync(join(root, 'manifest.json'), 'utf8'));
   requireThat(manifest.tool === 'squeez' && manifest.upstream?.repo === 'claudioemmanuel/squeez', 'invalid manifest');
-  for (const o of manifest.overlays) requireThat(o.id && o.what && Array.isArray(o.upstream) && o.upstream.length && o.retireWhen, `overlay ${o.id ?? '?'} lacks id/what/upstream/retireWhen`);
+  for (const o of manifest.overlays) {
+    requireThat(o.id && o.what && Array.isArray(o.upstream) && (o.upstream.length || upstreamIsPending(o)) && o.retireWhen, `overlay ${o.id ?? '?'} lacks id/what/upstream (or upstreamPending)/retireWhen`);
+    for (const f of o.files ?? []) requireThat(f.template && f.source && f.target && /^[a-f0-9]{64}$/.test(f.baseSha256 ?? ''), `overlay ${o.id} has a file entry without template/source/target/baseSha256`);
+  }
   for (const f of manifest.binaryFixes ?? []) requireThat(f.id && f.what && Array.isArray(f.markers) && f.markers.length && BINARY_FIX_STATES.includes(f.state) && f.retireWhen, `binary fix ${f.id ?? '?'} lacks id/what/markers/state/retireWhen`);
   return { manifest, home: process.env.USERPROFILE ?? process.env.HOME };
 }
@@ -262,6 +265,37 @@ export function restoreLedgerFile(target, source) {
   return b;
 }
 
+// ---------- buddy-english: the owner's English translation, carried over upstream's Portuguese buddy ----------
+
+// An overlay whose upstream issue is drafted but not filed yet says so, the way a binary fix does.
+export const upstreamIsPending = o => typeof o.upstreamPending === 'string' && o.upstreamPending.length > 20;
+const sha256Text = text => createHash('sha256').update(text).digest('hex');
+// `squeez update` and `squeez setup --host=claude-code` rewrite every buddy file from the templates embedded in
+// the binary, so an installed file is compared (line endings aside) with the ledger translation. The translation
+// was made from one exact template (baseSha256): when a release changes that template, putting the translation
+// back would silently undo upstream's change, so that state is reported instead of repaired.
+export function buddyFileState(file, templateOf, base = repoRoot) {
+  if (sha256Text(normalizeEol(Buffer.from(templateOf(file.template)))) !== file.baseSha256) return 'upstream-changed';
+  if (!existsSync(file.target)) return 'missing';
+  return normalizeEol(readFileSync(file.target)) === normalizeEol(readFileSync(resolve(base, file.source))) ? 'ok' : 'drifted';
+}
+// All or nothing: one changed template leaves every file as installed, so the buddy never mixes two languages.
+export function reapplyBuddyEnglish(o, templateOf, base = repoRoot) {
+  if (!existsSync(o.target)) return 'PASS buddy-english: buddy not installed';
+  const states = o.files.map(f => [f, buddyFileState(f, templateOf, base)]);
+  const stale = states.filter(([, s]) => s === 'upstream-changed').map(([f]) => f.template);
+  if (stale.length) return `DEFER buddy-english: ${stale.length} template(s) changed upstream since ${o.base} (${stale.join(', ')}); nothing was written. Redo the translation on the new templates, or retire the overlay if they are English now`;
+  const todo = states.filter(([, s]) => s !== 'ok');
+  if (!todo.length) return 'PASS buddy-english already the English translation';
+  const backups = [];
+  for (const [f, s] of todo) {
+    if (s === 'drifted') backups.push(backup(f.target));
+    mkdirSync(dirname(f.target), { recursive: true });
+    copyFileSync(resolve(base, f.source), f.target);
+  }
+  return `PASS buddy-english re-applied to ${todo.length} file(s) (${backups.length} backup(s) *.bak-squeez-promote-* next to them)`;
+}
+
 // Each check: [label, fn] where fn returns true (PASS), false (FAIL), or 'skip:<reason>'.
 export function verificationChecks(ctx) {
   const { manifest: m, home } = ctx;
@@ -304,6 +338,20 @@ export function verificationChecks(ctx) {
       checks.push(['overlay opencode-plugin-v2: markers ' + o.markers.join(' | '), () => o.markers.every(k => readFileSync(o.target, 'utf8').includes(k))]);
       if (o.testsSource) checks.push([`overlay opencode-plugin-v2: installed tests byte-identical to ${o.testsSource}`, () => ledgerFileState(o.tests, resolve(repoRoot, o.testsSource)) === 'ok']);
       if (o.testsSource) checks.push(['overlay opencode-plugin-v2: installed plugin tests pass (floor 30, all pass)', () => pluginTestsPass(o.tests)]);
+    } else if (o.id === 'buddy-english') {
+      const states = () => { const t = tag(); return o.files.map(f => [f.template, buddyFileState(f, path => tagTemplate(t, path))]); };
+      checks.push([`overlay buddy-english: the installed tag's ${o.files.length} buddy templates are the ${o.base} ones the translation was made from`, () => {
+        if (!existsSync(o.target)) return 'skip:buddy not installed';
+        const stale = states().filter(([, s]) => s === 'upstream-changed').map(([t]) => t);
+        requireThat(!stale.length, `changed upstream: ${stale.join(', ')}; redo the translation on the new templates, or retire the overlay if they are English now`);
+        return true;
+      }]);
+      checks.push([`overlay buddy-english: ${o.files.length} installed buddy files equal the translation in ${o.source} (line endings aside)`, () => {
+        if (!existsSync(o.target)) return 'skip:buddy not installed';
+        const off = states().filter(([, s]) => s === 'missing' || s === 'drifted').map(([t, s]) => `${t} ${s}`);
+        requireThat(!off.length, `${off.join(', ')}; squeez update/setup restored the Portuguese templates: run apply.mjs --apply`);
+        return true;
+      }]);
     }
   }
   for (const [file, keys] of Object.entries(m.config)) {
@@ -413,6 +461,10 @@ export function reapplyOverlay(o, ctx) {
       throw new PromoteError(`opencode-plugin-v2 tests failed after re-apply; previous plugin restored from ${b}`);
     }
     return `PASS opencode-plugin-v2 re-applied (backup ${b ?? 'none'})${testsNote}`;
+  }
+  if (o.id === 'buddy-english') {
+    const tag = versionTag(run(ctx.manifest.binary, ['--version'], 20000).out);
+    return reapplyBuddyEnglish(o, path => tagTemplate(tag, path));
   }
   throw new PromoteError(`unknown overlay ${o.id}`);
 }

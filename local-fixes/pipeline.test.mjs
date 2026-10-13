@@ -2,7 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as p from './pipeline.mjs';
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, rmSync, statSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, readdirSync, writeFileSync, existsSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
@@ -129,11 +129,12 @@ test('doctor output: only [FAIL] lines count', () => {
   assert.deepEqual(p.doctorFailures('[ok] all good'), []);
 });
 
-test('real manifest: every overlay names an upstream issue/PR and a retire condition; setup never targets unsafe hosts', () => {
+test('real manifest: every overlay names an upstream issue/PR (or says where its unfiled draft is) and a retire condition; setup never targets unsafe hosts', () => {
   const { manifest } = p.loadContext();
   assert.ok(manifest.overlays.length >= 3);
   for (const o of manifest.overlays) {
     assert.ok(o.upstream.every(u => /^https:\/\/github\.com\/[^/]+\/[^/]+\/(issues|pull)\/\d+$/.test(u.url)), o.id);
+    assert.ok(o.upstream.length > 0 || p.upstreamIsPending(o), `${o.id}: no upstream reference and no upstreamPending`);
     assert.ok(o.retireWhen.length > 20, o.id);
   }
   const hosts = manifest.setupHosts.map(h => h.host);
@@ -209,7 +210,7 @@ test('staged artifact verification fails for missing or hash-mismatched artifact
     { path: join(tmpdir(), 'squeez-review-nonexistent-artifact.exe'), sha256: '0'.repeat(64), bytes: 1 },
     { ...manifest.binaryFixes[0].staged, sha256: '0'.repeat(64) },
   ]) {
-    const m = structuredClone(manifest); m.binaryFixes = [{ ...m.binaryFixes[0], staged }];
+    const m = structuredClone(manifest); m.binaryFixes = [{ ...m.binaryFixes[0], state: 'staged', staged }];
     const check = p.verificationChecks({ manifest: m, home })
       .find(([label]) => label.startsWith('staged artifact write-race-guard:'));
     assert.ok(check, 'artifact verification missing');
@@ -300,4 +301,97 @@ test('real manifest: the plugin overlay carries its test file in the ledger, wit
   assert.ok(existsSync(source), source);
   assert.match(readFileSync(source, 'utf8'), /never starts a child process synchronously/);
   assert.ok(o.upstream.some(u => /issues\/245$/.test(u.url)), 'the execSync issue must be named');
+});
+
+// ---------- buddy-english (the translation squeez update/setup overwrites with the Portuguese templates) ----------
+
+function buddyFixture() {
+  const dir = mkdtempSync(join(tmpdir(), 'sq-buddy-'));
+  const sha = text => createHash('sha256').update(text).digest('hex');
+  const templates = { 'assets/buddy/lib/a.js': "const label = 'Comum';\n", 'assets/buddy/hooks/b.js': "say('Você tem um companheiro');\n" };
+  const english = { 'assets/buddy/lib/a.js': "const label = 'Common';\r\n", 'assets/buddy/hooks/b.js': "say('You have a companion');\r\n" };
+  const files = Object.keys(templates).map(template => {
+    const rel = template.replace('assets/', '');
+    const source = join('ledger', rel), target = join(dir, 'installed', rel);
+    mkdirSync(join(dir, 'ledger', rel, '..'), { recursive: true });
+    mkdirSync(join(target, '..'), { recursive: true });
+    writeFileSync(join(dir, source), english[template]);
+    return { template, source, target, baseSha256: sha(templates[template]) };
+  });
+  const overlay = { id: 'buddy-english', base: 'v0.0.1', target: join(dir, 'installed', 'buddy'), files };
+  // What `squeez update` / `squeez setup --host=claude-code` does: every buddy file back to its template.
+  const squeezSetup = () => files.forEach(f => writeFileSync(f.target, templates[f.template].replace(/\n/g, '\r\n')));
+  return { dir, templates, english, files, overlay, squeezSetup, templateOf: path => templates[path] };
+}
+
+test('buddy-english: a template restore is detected as drift and re-applied with a backup of every file', () => {
+  const x = buddyFixture();
+  try {
+    x.squeezSetup();
+    assert.deepEqual(x.files.map(f => p.buddyFileState(f, x.templateOf, x.dir)), ['drifted', 'drifted']);
+    const log = p.reapplyBuddyEnglish(x.overlay, x.templateOf, x.dir);
+    assert.match(log, /^PASS buddy-english re-applied to 2 file\(s\) \(2 backup/);
+    for (const f of x.files) {
+      assert.equal(readFileSync(f.target, 'utf8'), x.english[f.template]);
+      const backups = readdirSync(join(f.target, '..')).filter(n => n.includes('.bak-squeez-promote-'));
+      assert.equal(backups.length, 1, f.template);
+      assert.equal(readFileSync(join(f.target, '..', backups[0]), 'utf8'), x.templates[f.template].replace(/\n/g, '\r\n'), 'the backup is what was overwritten');
+    }
+    assert.deepEqual(x.files.map(f => p.buddyFileState(f, x.templateOf, x.dir)), ['ok', 'ok']);
+    const mtimes = x.files.map(f => statSync(f.target).mtimeMs);
+    assert.match(p.reapplyBuddyEnglish(x.overlay, x.templateOf, x.dir), /already the English translation/);
+    assert.deepEqual(x.files.map(f => statSync(f.target).mtimeMs), mtimes, 'idempotent: nothing rewritten');
+  } finally { rmSync(x.dir, { recursive: true, force: true }); }
+});
+
+test('buddy-english: line endings alone are not drift; a missing file is restored without a backup', () => {
+  const x = buddyFixture();
+  try {
+    x.files.forEach(f => writeFileSync(f.target, x.english[f.template].replace(/\r\n/g, '\n')));
+    assert.deepEqual(x.files.map(f => p.buddyFileState(f, x.templateOf, x.dir)), ['ok', 'ok']);
+    rmSync(x.files[0].target);
+    assert.equal(p.buddyFileState(x.files[0], x.templateOf, x.dir), 'missing');
+    assert.match(p.reapplyBuddyEnglish(x.overlay, x.templateOf, x.dir), /re-applied to 1 file\(s\) \(0 backup/);
+    assert.equal(readFileSync(x.files[0].target, 'utf8'), x.english[x.files[0].template]);
+  } finally { rmSync(x.dir, { recursive: true, force: true }); }
+});
+
+test('buddy-english: a template that changed upstream is never overwritten, and no other file is touched either', () => {
+  const x = buddyFixture();
+  try {
+    x.templates['assets/buddy/lib/a.js'] = "const label = 'Comum';\nconst added = 'upstream change';\n";
+    x.squeezSetup();
+    const before = x.files.map(f => readFileSync(f.target, 'utf8'));
+    assert.deepEqual(x.files.map(f => p.buddyFileState(f, x.templateOf, x.dir)), ['upstream-changed', 'drifted']);
+    const log = p.reapplyBuddyEnglish(x.overlay, x.templateOf, x.dir);
+    assert.match(log, /^DEFER buddy-english: 1 template\(s\) changed upstream since v0\.0\.1 \(assets\/buddy\/lib\/a\.js\)/);
+    assert.deepEqual(x.files.map(f => readFileSync(f.target, 'utf8')), before, 'all or nothing');
+    assert.equal(readdirSync(join(x.files[1].target, '..')).some(n => n.includes('.bak-')), false);
+  } finally { rmSync(x.dir, { recursive: true, force: true }); }
+});
+
+test('buddy-english: nothing is written when the buddy is not installed', () => {
+  const x = buddyFixture();
+  try {
+    rmSync(join(x.dir, 'installed'), { recursive: true, force: true });
+    assert.match(p.reapplyBuddyEnglish(x.overlay, x.templateOf, x.dir), /buddy not installed/);
+    assert.equal(existsSync(join(x.dir, 'installed')), false);
+  } finally { rmSync(x.dir, { recursive: true, force: true }); }
+});
+
+test('real manifest: buddy-english carries every translated file in the ledger, off the release-asset list, with the injected block in English', () => {
+  const { manifest } = p.loadContext();
+  const o = manifest.overlays.find(x => x.id === 'buddy-english');
+  assert.ok(o, 'overlay missing');
+  assert.equal(o.files.length, 12);
+  assert.ok(o.clobberedBy.includes('squeez update'));
+  const released = new Set(manifest.releaseAssets.map(a => a.target));
+  for (const f of o.files) {
+    assert.ok(existsSync(join(p.repoRoot, f.source)), f.source);
+    assert.match(f.baseSha256, /^[a-f0-9]{64}$/, f.template);
+    assert.ok(!released.has(f.target), `${f.target} is also a release asset: the two checks would contradict each other`);
+  }
+  const hook = readFileSync(join(p.repoRoot, o.files.find(f => f.template === 'assets/buddy/hooks/session-start.js').source), 'utf8');
+  assert.match(hook, /You have a companion named/);
+  assert.doesNotMatch(hook, /Você tem um companheiro/);
 });

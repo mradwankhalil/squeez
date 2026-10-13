@@ -15,18 +15,12 @@
     "all": "bare `squeez setup` runs every host above"
   },
   "releaseAssets": [
-    { "template": "hooks/pi-extension.ts", "target": "C:/Users/Zephyrus/.pi/agent/extensions/squeez/index.ts" },
-    { "template": "assets/buddy/lib/art.js", "target": "C:/Users/Zephyrus/.claude/squeez/buddy/lib/art.js" },
-    { "template": "assets/buddy/lib/engine.js", "target": "C:/Users/Zephyrus/.claude/squeez/buddy/lib/engine.js" },
-    { "template": "assets/buddy/lib/hud.js", "target": "C:/Users/Zephyrus/.claude/squeez/buddy/lib/hud.js" },
-    { "template": "assets/buddy/lib/squeez.js", "target": "C:/Users/Zephyrus/.claude/squeez/buddy/lib/squeez.js" },
-    { "template": "assets/buddy/lib/state.js", "target": "C:/Users/Zephyrus/.claude/squeez/buddy/lib/state.js" },
-    { "template": "assets/buddy/lib/usage.js", "target": "C:/Users/Zephyrus/.claude/squeez/buddy/lib/usage.js" }
+    { "template": "hooks/pi-extension.ts", "target": "C:/Users/Zephyrus/.pi/agent/extensions/squeez/index.ts" }
   ],
   "binaryFixes": [
     {
       "id": "write-race-guard",
-      "state": "staged",
+      "state": "live",
       "what": "Every host adapter rewrote its instruction file (CLAUDE.md, the OpenCode and Codex AGENTS.md, GEMINI.md, copilot-instructions.md, SOUL.md, the Pi SKILL.md) with read_to_string(..).unwrap_or_default() followed by a plain truncating fs::write. Two `squeez init` runs in the same moment: one read the file while the other had it truncated, took it for empty and wrote the squeez block alone. That wiped the owner rules from the OpenCode v2 AGENTS.md on 2026-10-10T01:17Z (16 KB down to 874 B). src/hosts/memory_file.rs now does the read-modify-write for all seven adapters: an existing file that cannot be read is an error, never empty; a result that drops text outside the squeez block is refused; the write is a temp file in the same directory renamed over the target; one writer at a time through an OS lock on the sibling .<name>.squeez-lock (released by the OS when its holder dies); and the file is re-read before the rename and left alone if it changed. Every refusal leaves the file untouched and is logged to %TEMP%/squeez-write-race-guard.log.",
       "markers": [
         "WRITE_RACE_GUARD_V1",
@@ -56,7 +50,7 @@
     },
     {
       "id": "state-outside-watched-config",
-      "state": "staged",
+      "state": "live",
       "what": "The OpenCode adapter keeps its sessions/memory/config.ini under %LOCALAPPDATA%/squeez/opencode instead of the OpenCode config tree, which OpenCode watches (2026-10-11 write storm). Built into the same staged binary as write-race-guard; the marker reaches the binary through the embedded plugin source. Copy the profile's squeez/config.ini to %LOCALAPPDATA%/squeez/opencode/config.ini before activation, or init runs with defaults (auto_compress_md = true).",
       "markers": [
         "STATE_OUTSIDE_WATCHED_CONFIG_V1"
@@ -147,6 +141,31 @@
         { "ref": "openai/codex#49164", "url": "https://github.com/openai/codex/pull/49164", "covers": "CREATE_NO_WINDOW for hooks and background subprocesses", "state": "merged 2026-09-29; first in 0.160.0-alpha.6; no stable release yet" }
       ],
       "retireWhen": "A stable Codex release containing openai/codex#49164 is installed AND the owner decides to re-enable hooks; then run `squeez setup --host=codex` and drop this overlay."
+    },
+    {
+      "id": "buddy-english",
+      "what": "The buddy (the duck companion) ships in Portuguese only: its session-start hook injects a Portuguese instruction block into every Claude Code session as additionalContext (\"Você tem um companheiro chamado ...\"), and its card, HUD, statusline, stats, CLI messages and the /buddy command are Portuguese too. For a non-Portuguese user that block is a standing instruction in another language in every session. This overlay installs the owner's English translation of the 11 buddy scripts and the /buddy command (2026-10-13). Identifiers, behaviour and file formats are unchanged; the duck keeps its name; lib/state.js maps the Portuguese archetype and intensity values persisted in existing state files to the English ones, so an existing duck keeps its identity. Each file records the SHA-256 of the template it was translated from (LF line endings): a file is re-applied only while the installed tag's template is still that one.",
+      "target": "C:/Users/Zephyrus/.claude/squeez/buddy",
+      "source": "local-fixes/buddy-english",
+      "base": "v1.48.18",
+      "files": [
+        { "template": "assets/buddy/buddy-cli.js", "source": "local-fixes/buddy-english/buddy/buddy-cli.js", "target": "C:/Users/Zephyrus/.claude/squeez/buddy/buddy-cli.js", "baseSha256": "74f090fe3fd53254f79aa93e2bfc8eee4a2b1778cd5d079b3e1b84405c8c61b6" },
+        { "template": "assets/buddy/hooks/post-tool-use.js", "source": "local-fixes/buddy-english/buddy/hooks/post-tool-use.js", "target": "C:/Users/Zephyrus/.claude/squeez/buddy/hooks/post-tool-use.js", "baseSha256": "38790c5e0534c03e3ad8c955d9b512d591f1695c8d1f82986bc4e0eb0f29a659" },
+        { "template": "assets/buddy/hooks/session-start.js", "source": "local-fixes/buddy-english/buddy/hooks/session-start.js", "target": "C:/Users/Zephyrus/.claude/squeez/buddy/hooks/session-start.js", "baseSha256": "0950859d521c368ecc5a810c20ebb36bd053f6161952941d11115bf10c091535" },
+        { "template": "assets/buddy/hooks/stop.js", "source": "local-fixes/buddy-english/buddy/hooks/stop.js", "target": "C:/Users/Zephyrus/.claude/squeez/buddy/hooks/stop.js", "baseSha256": "d429886810f7307e8bd28009e9a44460c559c5bf686e10183ee02be8d32fd60b" },
+        { "template": "assets/buddy/lib/art.js", "source": "local-fixes/buddy-english/buddy/lib/art.js", "target": "C:/Users/Zephyrus/.claude/squeez/buddy/lib/art.js", "baseSha256": "2fac0c94b9802c6509adc445af93930751d8ca84b67ab3bfd0cf6a02e4846fb9" },
+        { "template": "assets/buddy/lib/engine.js", "source": "local-fixes/buddy-english/buddy/lib/engine.js", "target": "C:/Users/Zephyrus/.claude/squeez/buddy/lib/engine.js", "baseSha256": "eca62598a5d06a71a5d35ef44ddfe20a3c7a6e13ea02585b53e4b314931f897e" },
+        { "template": "assets/buddy/lib/hud.js", "source": "local-fixes/buddy-english/buddy/lib/hud.js", "target": "C:/Users/Zephyrus/.claude/squeez/buddy/lib/hud.js", "baseSha256": "f8aa1b36517f02398ba45a8d14fcec37f21faaaa3f214155ae5a0f1797b1f934" },
+        { "template": "assets/buddy/lib/squeez.js", "source": "local-fixes/buddy-english/buddy/lib/squeez.js", "target": "C:/Users/Zephyrus/.claude/squeez/buddy/lib/squeez.js", "baseSha256": "c7038e25adb5a158eb40037f4542259d6e72a07339ccec82d79b41bf55c62c37" },
+        { "template": "assets/buddy/lib/state.js", "source": "local-fixes/buddy-english/buddy/lib/state.js", "target": "C:/Users/Zephyrus/.claude/squeez/buddy/lib/state.js", "baseSha256": "ed64bab874cfa2dc5d30c54f821ea9397198dedea2a2f0f544011d15595a9468" },
+        { "template": "assets/buddy/lib/usage.js", "source": "local-fixes/buddy-english/buddy/lib/usage.js", "target": "C:/Users/Zephyrus/.claude/squeez/buddy/lib/usage.js", "baseSha256": "11fc12f4827b4a676a41720f5e2f8bfa4356ff382401a9e91c825f69e3a06f96" },
+        { "template": "assets/buddy/statusline/statusline.js", "source": "local-fixes/buddy-english/buddy/statusline/statusline.js", "target": "C:/Users/Zephyrus/.claude/squeez/buddy/statusline/statusline.js", "baseSha256": "28d22e01e146a9404181ef82be5e71135889daf2e234c13041f6b303aa44bb59" },
+        { "template": "assets/buddy-command.md", "source": "local-fixes/buddy-english/buddy-command.md", "target": "C:/Users/Zephyrus/.claude/commands/buddy.md", "baseSha256": "cdf6ea39de752fc97be436bd569585cfd2d5a173634725c92743d475a0ab6603" }
+      ],
+      "clobberedBy": ["squeez update", "squeez setup", "squeez setup --host=claude-code", "apply.mjs --apply steps 1-2 (step 3 puts the translation back)"],
+      "upstream": [],
+      "upstreamPending": "Issue and PR are drafted, not filed (the upstream batch files them): Documents/ai/storage/buddy-english-20261013/upstream/ISSUE.md and PR.md; the PR payload is branch fix/buddy-english of Documents/ai/squeez (worktree Documents/ai/squeez-buddy-english-wt). Put both URLs in `upstream` once filed and delete this key.",
+      "retireWhen": "A squeez release's assets/buddy templates and assets/buddy-command.md are English (or choose the language from a setting that is English here): check hooks/session-start.js at the tag for the injected block, not the changelog. verify then FAILs the 'templates are the base' check on purpose; confirm the installed buddy is English, then delete this entry, its two checks, its repair and local-fixes/buddy-english/, and put the six assets/buddy/lib entries back into releaseAssets."
     }
   ],
   "config": {
