@@ -93,6 +93,20 @@ holds, and every required config file exists; the OMO exclusion is present (SKIP
 while an OpenCode restart is pending); and the four canonical instruction blocks
 are IN SYNC.
 
+## v1.48.24 retires both binary fixes (staged 2026-10-27, window C)
+
+Upstream v1.48.24 ships both fixes (write race: #269 via our PR #274; state dir: #270 via #280) and the
+English buddy (#268 via #281, follows `lang`). `retired` is a third binary-fix state: the entry stays as a
+record, `binaryPromotionBlockers` ignores it and no check runs for it. The promotion is staged, not applied:
+`manifest.v1.48.24.json` (both fixes `retired`, `buddy-english` moved to `retiredOverlays`, the six
+`assets/buddy/lib` files back in `releaseAssets`) and the official exe (SHA-256 `a1cb65a1…f7df80`) wait in
+`Documents/ai/storage/window-c/squeez/`. The owner activates them in window C with
+`storage/window-c/components/squeez.ps1 -Apply` (swaps exe + manifest, then `apply.mjs --apply`; backups in
+`window-c/squeez/backup/<stamp>`, `-Rollback` restores them). After it, this file's `manifest.json` is the
+retired one; delete the buddy-english translation folder and the section below in the next ledger commit.
+The wrap-guard overlay stays until a hang test against the official binary passes (#261/#262 fixed it in
+the binary, not the plugin).
+
 ## Binary fixes are live (2026-10-12)
 
 Both `manifest.binaryFixes` entries are `live`: the installed binary is the reviewed

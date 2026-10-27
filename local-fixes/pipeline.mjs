@@ -195,11 +195,12 @@ export const staleServers = (procs, pluginMtimeMs) => procs.filter(p => p.starte
 
 // `staged`: built and waiting for the owner's swap. `live`: installed; from then on a missing marker
 // means the binary was replaced (squeez update installs the stock release) and the fix is gone.
-export const BINARY_FIX_STATES = ['staged', 'live'];
+// `retired`: an upstream release ships the fix; the entry stays as a record, nothing checks or blocks on it.
+export const BINARY_FIX_STATES = ['staged', 'live', 'retired'];
 export const binaryHasFix = (bytes, fix) => fix.markers.every(marker => bytes.includes(marker));
 export const liveBinaryFixes = manifest => (manifest.binaryFixes ?? []).filter(f => f.state === 'live');
 export const binaryPromotionBlockers = (manifest, bytes) => (manifest.binaryFixes ?? [])
-  .filter(f => f.state === 'live' || binaryHasFix(bytes, f)).map(f => f.id);
+  .filter(f => f.state !== 'retired' && (f.state === 'live' || binaryHasFix(bytes, f))).map(f => f.id);
 export function binaryFixCheck(bytes, fix) {
   if (fix.state === 'live') return binaryHasFix(bytes, fix) && artifactMatches(bytes, fix.staged);
   if (binaryHasFix(bytes, fix)) return true;
@@ -314,7 +315,7 @@ export function verificationChecks(ctx) {
     ...m.releaseAssets.map(a => [`${a.target.replace(home.replace(/\\/g, '/'), '~')} equals <installed tag>:${a.template}`,
       () => existsSync(a.target) && normalizeEol(readFileSync(a.target)) === normalizeEol(tagTemplate(tag(), a.template))]),
   ];
-  for (const f of m.binaryFixes ?? []) checks.push([`binary fix ${f.id} (${f.state}): ${f.markers.join(' | ')}`, () => existsSync(bin) && binaryFixCheck(readFileSync(bin), f)]);
+  for (const f of (m.binaryFixes ?? []).filter(x => x.state !== 'retired')) checks.push([`binary fix ${f.id} (${f.state}): ${f.markers.join(' | ')}`, () => existsSync(bin) && binaryFixCheck(readFileSync(bin), f)]);
   for (const f of m.binaryFixes ?? []) if (f.state === 'staged') checks.push([
     `staged artifact ${f.id}: SHA-256, bytes, PE console subsystem and markers`, () => {
       if (!f.staged?.path || !existsSync(f.staged.path)) return false;

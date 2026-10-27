@@ -1,0 +1,434 @@
+{
+  "tool": "squeez",
+  "binary": "C:/Users/Zephyrus/.claude/squeez/bin/squeez.exe",
+  "upstream": {
+    "repo": "claudioemmanuel/squeez",
+    "asset": "squeez-windows-x86_64.exe"
+  },
+  "install": "Normal upstream install: `squeez update` (downloads the latest release, checks checksums.sha256, swaps the running exe by rename, refreshes Claude Code hooks), then `squeez setup --host=<h>` for each safe host.",
+  "setupHosts": [
+    {
+      "host": "claude-code",
+      "requires": "C:/Users/Zephyrus/.claude"
+    },
+    {
+      "host": "pi",
+      "requires": "C:/Users/Zephyrus/.pi/agent"
+    },
+    {
+      "host": "gemini",
+      "requires": "C:/Users/Zephyrus/.gemini"
+    }
+  ],
+  "neverSetupHosts": {
+    "opencode": "overwrites the owner OpenCode plugin (overlay opencode-plugin)",
+    "codex": "re-registers Codex hooks the owner keeps OFF (overlay codex-hooks-off)",
+    "copilot": "rewrites the broken top-level registration (overlay copilot-hooks, upstream #243)",
+    "all": "bare `squeez setup` runs every host above"
+  },
+  "releaseAssets": [
+    {
+      "template": "hooks/pi-extension.ts",
+      "target": "C:/Users/Zephyrus/.pi/agent/extensions/squeez/index.ts"
+    },
+    {
+      "template": "assets/buddy/lib/art.js",
+      "target": "C:/Users/Zephyrus/.claude/squeez/buddy/lib/art.js"
+    },
+    {
+      "template": "assets/buddy/lib/engine.js",
+      "target": "C:/Users/Zephyrus/.claude/squeez/buddy/lib/engine.js"
+    },
+    {
+      "template": "assets/buddy/lib/hud.js",
+      "target": "C:/Users/Zephyrus/.claude/squeez/buddy/lib/hud.js"
+    },
+    {
+      "template": "assets/buddy/lib/squeez.js",
+      "target": "C:/Users/Zephyrus/.claude/squeez/buddy/lib/squeez.js"
+    },
+    {
+      "template": "assets/buddy/lib/state.js",
+      "target": "C:/Users/Zephyrus/.claude/squeez/buddy/lib/state.js"
+    },
+    {
+      "template": "assets/buddy/lib/usage.js",
+      "target": "C:/Users/Zephyrus/.claude/squeez/buddy/lib/usage.js"
+    }
+  ],
+  "binaryFixes": [
+    {
+      "id": "write-race-guard",
+      "state": "retired",
+      "what": "Every host adapter rewrote its instruction file (CLAUDE.md, the OpenCode and Codex AGENTS.md, GEMINI.md, copilot-instructions.md, SOUL.md, the Pi SKILL.md) with read_to_string(..).unwrap_or_default() followed by a plain truncating fs::write. Two `squeez init` runs in the same moment: one read the file while the other had it truncated, took it for empty and wrote the squeez block alone. That wiped the owner rules from the OpenCode v2 AGENTS.md on 2026-10-10T01:17Z (16 KB down to 874 B). src/hosts/memory_file.rs now does the read-modify-write for all seven adapters: an existing file that cannot be read is an error, never empty; a result that drops text outside the squeez block is refused; the write is a temp file in the same directory renamed over the target; one writer at a time through an OS lock on the sibling .<name>.squeez-lock (released by the OS when its holder dies); and the file is re-read before the rename and left alone if it changed. Every refusal leaves the file untouched and is logged to %TEMP%/squeez-write-race-guard.log.",
+      "markers": [
+        "WRITE_RACE_GUARD_V1",
+        "WRITE_RACE_REVIEW_V2"
+      ],
+      "source": "C:/Users/Zephyrus/Documents/ai/squeez, branch local/write-race-guard-1.48.18 (v1.48.18 merged into feat/opencode-wrap-guard; local only, not pushed): src/hosts/memory_file.rs and the seven adapters in src/hosts/",
+      "tests": "cargo test --lib hosts::memory_file (unit + in-process race, including the pre-fix code path losing the rules); cargo test --test test_write_race (real `squeez init --host=opencode` processes; set SQUEEZ_LEGACY_BIN to a stock binary to watch it lose them)",
+      "review": "4f89287: redact owner text in refusals, reject ambiguous markers, compare after fsync and before every rename retry, preserve unowned temp collisions, refuse readonly targets, create Unix temps privately and propagate chmod errors. Review proof includes an external writer during rename retry, killed process mid-write, 10 MB BOM/Unicode/CRLF, readonly targets, corrupted markers and literal shell paths. Detected errors fail closed; an uncooperative writer can still race the final compare and rename. Network/sync-provider semantics, ACL/xattr preservation and power-loss durability are not proven. compress-md remains a separate unguarded write path: keep auto_compress_md=false.",
+      "staged": {
+        "path": "C:/Users/Zephyrus/Documents/ai/storage/squeez-review-gate-20261011T214733Z/staged/squeez.exe",
+        "sha256": "8eb9be745d46895d7371cc56227d5a620f35ac61a1644d2bf87d2b597ec0c300",
+        "bytes": 2390528,
+        "base": "v1.48.18",
+        "commit": "4f89287 on local/write-race-guard-1.48.18 (includes 454e732, c4dd0b2, b0d3ca4, c9e2c21; independent adversarial-review hardening)",
+        "verifyBy": "this sha256 only: the release build is not byte-reproducible, a rebuild of the same commit has a different hash",
+        "alsoContains": "c9e2c21 Windows benchmark discovery plus 4f89287 shell quoting, extended UNC handling, and Unix backslash preservation. Exact SHA-256 binds these changes; no separate benchmark marker.",
+        "previous": {
+          "path": "C:/Users/Zephyrus/Documents/ai/storage/squeez-write-race-fix-20261011T204221Z/staged/squeez.exe",
+          "sha256": "c66e5eb2556fd74eceea1fdacdc36ea6cbd8ee3444044fc5003c781f23f07368",
+          "note": "pre-review staged build, retained unchanged; squeez.exe.prev-aa424f16 remains beside it as an older rollback"
+        },
+        "replaces": "C:/Users/Zephyrus/.claude/squeez/bin/squeez.exe (stock 1.48.18, sha256 3e01cc8d53ff45d1a21ca0cef53fa53a1ae6a1571eb5bfeccf7fd05f5c4e29fd)"
+      },
+      "clobberedBy": [
+        "squeez update",
+        "apply.mjs --apply"
+      ],
+      "upstream": [
+        {
+          "ref": "claudioemmanuel/squeez#269",
+          "url": "https://github.com/claudioemmanuel/squeez/issues/269",
+          "covers": "instruction-file read/default/truncate/write race",
+          "state": "open; design review and maintainer labels pending (2026-10-14)"
+        }
+      ],
+      "benchmarkUpstream": {
+        "ref": "claudioemmanuel/squeez#272",
+        "url": "https://github.com/claudioemmanuel/squeez/issues/272",
+        "covers": "Windows executable discovery and shell fixture paths in staged.alsoContains",
+        "state": "open; scoped tests/review and maintainer labels pending (2026-10-14)"
+      },
+      "retireWhen": "A squeez release's host adapters no longer treat a failed read as an empty file and replace instruction files by rename under a writer lock (check src/hosts/*.rs at the tag, not the changelog). Then run the normal `squeez update` and delete this entry.",
+      "retired": {
+        "on": "2026-10-27",
+        "release": "v1.48.24",
+        "by": [
+          "https://github.com/claudioemmanuel/squeez/issues/269",
+          "https://github.com/claudioemmanuel/squeez/pull/274"
+        ],
+        "note": "official v1.48.24 binary installed in window C; local build kept under storage/window-c/squeez/backup for rollback"
+      }
+    },
+    {
+      "id": "state-outside-watched-config",
+      "state": "retired",
+      "what": "The OpenCode adapter keeps its sessions/memory/config.ini under %LOCALAPPDATA%/squeez/opencode instead of the OpenCode config tree, which OpenCode watches (2026-10-11 write storm). Built into the same staged binary as write-race-guard; the marker reaches the binary through the embedded plugin source. Copy the profile's squeez/config.ini to %LOCALAPPDATA%/squeez/opencode/config.ini before activation, or init runs with defaults (auto_compress_md = true).",
+      "markers": [
+        "STATE_OUTSIDE_WATCHED_CONFIG_V1"
+      ],
+      "source": "C:/Users/Zephyrus/Documents/ai/squeez, branch local/write-race-guard-1.48.18 (v1.48.18 merged into feat/opencode-wrap-guard; local only, not pushed): src/hosts/opencode.rs (state_dir) and opencode-plugin/squeez.js (marker comment)",
+      "staged": {
+        "path": "C:/Users/Zephyrus/Documents/ai/storage/squeez-review-gate-20261011T214733Z/staged/squeez.exe",
+        "sha256": "8eb9be745d46895d7371cc56227d5a620f35ac61a1644d2bf87d2b597ec0c300",
+        "bytes": 2390528,
+        "base": "v1.48.18",
+        "commit": "4f89287 on local/write-race-guard-1.48.18 (includes 454e732, c4dd0b2, b0d3ca4, c9e2c21; independent adversarial-review hardening)",
+        "verifyBy": "this sha256 only: the release build is not byte-reproducible, a rebuild of the same commit has a different hash",
+        "alsoContains": "c9e2c21 Windows benchmark discovery plus 4f89287 shell quoting, extended UNC handling, and Unix backslash preservation. Exact SHA-256 binds these changes; no separate benchmark marker.",
+        "previous": {
+          "path": "C:/Users/Zephyrus/Documents/ai/storage/squeez-write-race-fix-20261011T204221Z/staged/squeez.exe",
+          "sha256": "c66e5eb2556fd74eceea1fdacdc36ea6cbd8ee3444044fc5003c781f23f07368",
+          "note": "pre-review staged build, retained unchanged; squeez.exe.prev-aa424f16 remains beside it as an older rollback"
+        },
+        "replaces": "C:/Users/Zephyrus/.claude/squeez/bin/squeez.exe (stock 1.48.18, sha256 3e01cc8d53ff45d1a21ca0cef53fa53a1ae6a1571eb5bfeccf7fd05f5c4e29fd)"
+      },
+      "clobberedBy": [
+        "squeez update",
+        "apply.mjs --apply"
+      ],
+      "upstream": [
+        {
+          "ref": "claudioemmanuel/squeez#270",
+          "url": "https://github.com/claudioemmanuel/squeez/issues/270",
+          "covers": "runtime state relocation outside watched OpenCode config",
+          "state": "open; migration design and maintainer labels pending (2026-10-14)"
+        }
+      ],
+      "benchmarkUpstream": {
+        "ref": "claudioemmanuel/squeez#272",
+        "url": "https://github.com/claudioemmanuel/squeez/issues/272",
+        "covers": "Windows executable discovery and shell fixture paths in staged.alsoContains",
+        "state": "open; scoped tests/review and maintainer labels pending (2026-10-14)"
+      },
+      "retireWhen": "A squeez release keeps the OpenCode adapter's runtime state outside the OpenCode config directory (check data_dir in src/hosts/opencode.rs at the tag). Then delete this entry.",
+      "retired": {
+        "on": "2026-10-27",
+        "release": "v1.48.24",
+        "by": [
+          "https://github.com/claudioemmanuel/squeez/issues/270",
+          "https://github.com/claudioemmanuel/squeez/pull/280"
+        ],
+        "note": "official v1.48.24 binary installed in window C; local build kept under storage/window-c/squeez/backup for rollback"
+      }
+    }
+  ],
+  "overlays": [
+    {
+      "id": "opencode-plugin",
+      "what": "Owner OpenCode plugin: on Windows the wrapper follows the OpenCode `shell` config key, not the OS. A PowerShell shell gets powershell.exe -EncodedCommand (upstream wraps with POSIX quoting and squeez wrap runs them in bash) and WSL commands bounded by a taskkill /F /T supervisor that exits 124; a bash shell gets the POSIX form with a forward-slash quoted binary path, and WSL commands are left unwrapped so the host timeout bounds them. On the win32+bash path the wrapped command additionally gets an outside-envelope guard (upstream #261): the inner wrap stays byte-identical, the whole wrap is redirected to a per-call log and backgrounded, and a watchdog at ceiling+15s tree-kills via /proc/<pid>/winpid if squeez overstays — descendants of squeez leak its std handles and hold the harness pipe past every ceiling; kill-switch <tmpdir>/squeez-wrap-guard.OFF, plain-wrap fallback past 7000 chars (MSYS argv truncation, #262). The plugin starts no child process synchronously: inside the OpenCode server the first execSync of a hook call fails at once with a false ETIMEDOUT, which dropped the read/grep budget; it uses existsSync and async execFile (one retry, 60 s cache). Post-execution tracking pipes a JSON payload to `squeez track-result` over stdin with EOF (the observer no-ops on empty stdin — upstream #247); the v2 path subscribes shell.exited for shell completions and session.execution.started (per-session dedupe) for init.",
+      "target": "C:/Users/Zephyrus/.config/opencode/plugins/squeez.js",
+      "source": "local-fixes/opencode-plugin/squeez.js",
+      "markers": [
+        "-EncodedCommand",
+        "taskkill /F /T /PID",
+        "windowsHide: true",
+        "export default {",
+        "resolveShellFamily",
+        "squeezInstalled",
+        "shell_status",
+        "child.stdin.end",
+        "__sqz_guard_v1"
+      ],
+      "tests": "C:/Users/Zephyrus/.config/opencode/tests/squeez-plugin.test.mjs",
+      "testsSource": "local-fixes/opencode-plugin/squeez-plugin.test.mjs",
+      "clobberedBy": [
+        "squeez setup",
+        "squeez setup --host=opencode"
+      ],
+      "upstream": [
+        {
+          "ref": "claudioemmanuel/squeez#244",
+          "url": "https://github.com/claudioemmanuel/squeez/issues/244",
+          "covers": "PowerShell -EncodedCommand wrapping; shell-aware wrapper reported in a follow-up comment on 2026-10-02 (issuecomment-5959771466)",
+          "state": "open"
+        },
+        {
+          "ref": "claudioemmanuel/squeez#245",
+          "url": "https://github.com/claudioemmanuel/squeez/issues/245",
+          "covers": "no synchronous child processes: execSync fails with a false ETIMEDOUT inside the OpenCode server, so the read/grep budget was never applied",
+          "state": "open"
+        },
+        {
+          "ref": "claudioemmanuel/squeez#246",
+          "url": "https://github.com/claudioemmanuel/squeez/pull/246",
+          "covers": "the fix for #245 on the stock plugin (accessSync + async execFile, one retry, 60 s cache)",
+          "state": "merged 2026-10-05"
+        },
+        {
+          "ref": "claudioemmanuel/squeez#239",
+          "url": "https://github.com/claudioemmanuel/squeez/issues/239",
+          "covers": "wrap timeout never returns (WSL supervisor)",
+          "state": "open"
+        },
+        {
+          "ref": "claudioemmanuel/squeez#242",
+          "url": "https://github.com/claudioemmanuel/squeez/pull/242",
+          "covers": "dual export for OpenCode 2.x (this plugin is 1.x-only)",
+          "state": "closed unmerged — maintainer implemented the dual export directly in 1.48.17"
+        },
+        {
+          "ref": "claudioemmanuel/squeez#247",
+          "url": "https://github.com/claudioemmanuel/squeez/issues/247",
+          "covers": "track-result silent no-op (empty stdin, all hosts), shell.exited completion tracking + session.execution.started init alias on 2.x; fix rides PR #242 commit 4d2a0f3",
+          "state": "open"
+        },
+        {
+          "ref": "claudioemmanuel/squeez#261",
+          "url": "https://github.com/claudioemmanuel/squeez/issues/261",
+          "covers": "wrap EOF: descendants leak squeez std handles (harness pipe never closes), unbounded post-exit drain, taskkill blind to MSYS-exec'd children, output discarded on timeout; outside-envelope guard rides this overlay",
+          "state": "open"
+        },
+        {
+          "ref": "claudioemmanuel/squeez#262",
+          "url": "https://github.com/claudioemmanuel/squeez/issues/262",
+          "covers": "MSYS -c argv truncates at 8186 chars; backslash pairs halved per native-to-MSYS hop; guard's 7000-char length fallback rides this overlay",
+          "state": "open"
+        },
+        {
+          "ref": "claudioemmanuel/squeez#263",
+          "url": "https://github.com/claudioemmanuel/squeez/pull/263",
+          "covers": "plugin-side reference implementation of the outside-envelope guard for #261 (with the #262 length fallback), ported onto the 1.48.17 stock plugin structure; filed for reference — the durable fix belongs in the Rust binary",
+          "state": "open PR"
+        }
+      ],
+      "retireWhen": "A squeez release's opencode-plugin/squeez.js contains the -EncodedCommand wrapping chosen by the OpenCode shell, a bounded WSL timeout, no execSync/execFileSync/spawnSync (#245), the v2 setup(ctx) entry (#242) and the #247 event-surface fixes (marker: shell_status in the plugin), and the binary no longer leaks its std handles to descendants and bounds its post-exit drain (#261) (check by marker, not by changelog). The #242 dual export was merged into this file on 2026-10-02 (see overlay opencode-plugin-v2)."
+    },
+    {
+      "id": "opencode-plugin-v2",
+      "what": "The same merged plugin installed to the OpenCode v2 profile as a config-dir drop. One file, two entry points: server() for v1 and setup(ctx) for v2 — the v2 path registers on ctx.shell/ctx.tool/ctx.event with the wrapper following the shell each create.before event carries (#244), no synchronous spawns (#245/#246), async budget injection with a 60 s cache, the WSL supervisor on PowerShell shells (#239), and the win32+bash outside-envelope guard (#261: per-call log + watchdog tree-kill via /proc/<pid>/winpid at ceiling+15s, kill-switch <tmpdir>/squeez-wrap-guard.OFF, 7000-char plain-wrap fallback for #262). This is the migration-dossier §3.6 merge of PR #242's dual export with the owner overlays. It also tracks shell completions via the shell.exited bus event with a real stdin payload (track-result was a silent no-op on empty stdin everywhere) and restores per-session init via the session.execution.started alias with per-session dedupe (#247, PR #242 commit 4d2a0f3); v2 execute.after is restricted to read/grep/glob so shell is never double-counted.",
+      "target": "C:/Users/Zephyrus/.opencode-v2/config/opencode/plugins/squeez.js",
+      "source": "local-fixes/opencode-plugin/squeez.js",
+      "markers": [
+        "-EncodedCommand",
+        "taskkill /F /T /PID",
+        "windowsHide: true",
+        "export default {",
+        "resolveShellFamily",
+        "squeezInstalled",
+        "ctx.shell.hook",
+        "createSetup",
+        "shell_status",
+        "child.stdin.end",
+        "__sqz_guard_v1"
+      ],
+      "tests": "C:/Users/Zephyrus/.opencode-v2/config/opencode/tests/squeez-plugin.test.mjs",
+      "testsSource": "local-fixes/opencode-plugin/squeez-plugin.test.mjs",
+      "clobberedBy": [
+        "squeez setup --host=opencode under the v2 launcher (XDG_CONFIG_HOME pointed at the v2 profile)"
+      ],
+      "upstream": [
+        {
+          "ref": "claudioemmanuel/squeez#242",
+          "url": "https://github.com/claudioemmanuel/squeez/pull/242",
+          "covers": "dual export for OpenCode 2.x; this overlay merges it with the owner overlays instead of waiting",
+          "state": "closed unmerged — maintainer implemented the dual export directly in 1.48.17"
+        },
+        {
+          "ref": "claudioemmanuel/squeez#244",
+          "url": "https://github.com/claudioemmanuel/squeez/issues/244",
+          "covers": "PowerShell -EncodedCommand wrapping; shell-aware wrapper reported in a follow-up comment on 2026-10-02 (issuecomment-5959771466)",
+          "state": "open"
+        },
+        {
+          "ref": "claudioemmanuel/squeez#245",
+          "url": "https://github.com/claudioemmanuel/squeez/issues/245",
+          "covers": "no synchronous child processes: execSync fails with a false ETIMEDOUT inside the OpenCode server",
+          "state": "open"
+        },
+        {
+          "ref": "claudioemmanuel/squeez#246",
+          "url": "https://github.com/claudioemmanuel/squeez/pull/246",
+          "covers": "the fix for #245 on the stock plugin (accessSync + async execFile, one retry, 60 s cache)",
+          "state": "merged 2026-10-05"
+        },
+        {
+          "ref": "claudioemmanuel/squeez#239",
+          "url": "https://github.com/claudioemmanuel/squeez/issues/239",
+          "covers": "wrap timeout never returns (WSL supervisor)",
+          "state": "open"
+        },
+        {
+          "ref": "claudioemmanuel/squeez#247",
+          "url": "https://github.com/claudioemmanuel/squeez/issues/247",
+          "covers": "track-result silent no-op (empty stdin), shell.exited tracking + session.execution.started init alias on 2.x; fix rides PR #242 commit 4d2a0f3",
+          "state": "open"
+        },
+        {
+          "ref": "claudioemmanuel/squeez#261",
+          "url": "https://github.com/claudioemmanuel/squeez/issues/261",
+          "covers": "wrap EOF: handle leak + unbounded post-exit drain + MSYS-blind taskkill + discarded output; outside-envelope guard rides this overlay",
+          "state": "open"
+        },
+        {
+          "ref": "claudioemmanuel/squeez#262",
+          "url": "https://github.com/claudioemmanuel/squeez/issues/262",
+          "covers": "MSYS -c argv truncates at 8186 chars; backslash halving per hop; guard's 7000-char length fallback rides this overlay",
+          "state": "open"
+        },
+        {
+          "ref": "claudioemmanuel/squeez#263",
+          "url": "https://github.com/claudioemmanuel/squeez/pull/263",
+          "covers": "plugin-side reference implementation of the outside-envelope guard for #261 (with the #262 length fallback), ported onto the 1.48.17 stock plugin structure; filed for reference — the durable fix belongs in the Rust binary",
+          "state": "open PR"
+        }
+      ],
+      "retireWhen": "A squeez release ships the dual export WITH shell-aware wrapping, a bounded WSL timeout, no synchronous spawns, the #247 event-surface fixes (marker: shell_status in the plugin), and no descendant handle leak / bounded post-exit drain (#261) (check by marker). Until then never run `squeez setup --host=opencode` under the v2 launcher — it would drop the v1-only stock file into the v2 profile."
+    },
+    {
+      "id": "copilot-hooks",
+      "what": "Register squeez's Copilot CLI hooks under settings.hooks.<Event> with forward-slash paths; squeez 1.48.10 writes top-level keys Copilot ignores, with unquoted backslash paths.",
+      "target": "C:/Users/Zephyrus/.copilot/settings.json",
+      "clobberedBy": [
+        "squeez setup",
+        "squeez setup --host=copilot"
+      ],
+      "upstream": [
+        {
+          "ref": "claudioemmanuel/squeez#243",
+          "url": "https://github.com/claudioemmanuel/squeez/issues/243",
+          "covers": "EventRoot::TopLevel + unquoted paths in src/hosts/copilot.rs",
+          "state": "open"
+        }
+      ],
+      "retireWhen": "A squeez release writes Copilot hooks under hooks.<Event> (EventRoot::Nested) with shell_arg paths; then `squeez setup --host=copilot` moves to setupHosts."
+    },
+    {
+      "id": "codex-hooks-off",
+      "what": "Owner decision (X-74, X-119): no squeez hook registered with Codex on Windows and the context-mode Codex plugin disabled, because Codex's managed daemon starts hooks without CREATE_NO_WINDOW (one flashing window per hook).",
+      "target": "C:/Users/Zephyrus/.codex/hooks.json",
+      "codexConfig": "C:/Users/Zephyrus/.codex/config.toml",
+      "clobberedBy": [
+        "squeez setup",
+        "squeez setup --host=codex"
+      ],
+      "upstream": [
+        {
+          "ref": "openai/codex#49164",
+          "url": "https://github.com/openai/codex/pull/49164",
+          "covers": "CREATE_NO_WINDOW for hooks and background subprocesses",
+          "state": "merged 2026-09-29; first in 0.160.0-alpha.6; no stable release yet"
+        }
+      ],
+      "retireWhen": "A stable Codex release containing openai/codex#49164 is installed AND the owner decides to re-enable hooks; then run `squeez setup --host=codex` and drop this overlay."
+    }
+  ],
+  "config": {
+    "C:/Users/Zephyrus/.claude/squeez/config.ini": {
+      "wrap_timeout_secs": "540",
+      "context_window_tokens": "1000000",
+      "auto_compress_md": "false"
+    },
+    "C:/Users/Zephyrus/.config/opencode/squeez/config.ini": {
+      "auto_compress_md": "false"
+    },
+    "C:/Users/Zephyrus/.codex/squeez/config.ini": {
+      "auto_compress_md": "false"
+    },
+    "C:/Users/Zephyrus/.gemini/squeez/config.ini": {
+      "auto_compress_md": "false"
+    },
+    "C:/Users/Zephyrus/.copilot/squeez/config.ini": {
+      "auto_compress_md": "false"
+    },
+    "C:/Users/Zephyrus/.pi/agent/squeez/config.ini": {
+      "auto_compress_md": "false"
+    },
+    "C:/Users/Zephyrus/.opencode-v2/config/opencode/squeez/config.ini": {
+      "auto_compress_md": "false"
+    },
+    "C:/Users/Zephyrus/AppData/Local/squeez/opencode/config.ini": {
+      "auto_compress_md": "false"
+    }
+  },
+  "configRequiredWhen": {
+    "C:/Users/Zephyrus/.claude/squeez/config.ini": "C:/Users/Zephyrus/.claude/squeez/hooks/session-start.sh",
+    "C:/Users/Zephyrus/.config/opencode/squeez/config.ini": "C:/Users/Zephyrus/.config/opencode/plugins/squeez.js",
+    "C:/Users/Zephyrus/.opencode-v2/config/opencode/squeez/config.ini": "C:/Users/Zephyrus/.opencode-v2/config/opencode/plugins/squeez.js",
+    "C:/Users/Zephyrus/AppData/Local/squeez/opencode/config.ini": "C:/Users/Zephyrus/.opencode-v2/config/opencode/plugins/squeez.js"
+  },
+  "configWhy": {
+    "wrap_timeout_secs": "owner value 540 (default 360); related to #239",
+    "context_window_tokens": "owner pin at 1M so squeez's context meter matches the model window",
+    "auto_compress_md": "owner policy X-28/X-98/X-119: compress-md rewrote CLAUDE.md/AGENTS.md on every session start; each host's init reads its own config.ini, and setup creates new host configs with true",
+    "configRequiredWhen": "a missing config.ini is not neutral: init falls back to Config::default() (init.rs load_config_from), whose auto_compress_md is true (config.rs), so a host whose init trigger exists must have its file. The OpenCode v2 profile (XDG_CONFIG_HOME=~/.opencode-v2/config) reads ~/.opencode-v2/config/opencode/squeez/config.ini, which was absent until 2026-09-30"
+  },
+  "omoClaudeHooksOff": {
+    "file": "C:/Users/Zephyrus/.config/opencode/opencode-cc-plugin.json",
+    "event": "PreToolUse",
+    "pattern": "^pretooluse\\.sh\"?$",
+    "plugin": "C:/Users/Zephyrus/.config/opencode/plugins/squeez.js",
+    "why": "oh-my-openagent runs Claude Code PreToolUse hooks on OpenCode tool calls and applies updatedInput with output.args = {...} (packages/utils/src/replace-tool-args.ts). OpenCode executes the original args object (session/tools.ts passes { args } and never reads output.args back), so the Claude hook's wrap is dropped and the squeez plugin, which runs after OMO, edits the detached copy: commands ran raw except the ones squeez should-wrap rejects. Under OpenCode the squeez plugin is the wrapper, so squeez's Claude pretooluse.sh is excluded for OMO. OMO matches the pattern against command.split('/').pop(), which for the registered command is pretooluse.sh followed by a double quote. OMO's non-interactive-env hook detached every command containing the word git the same way; that half is OMO ledger fix 17-tool-args-in-place (oh-my-openagent-fix/local-fixes, 2026-10-02), which makes OMO edit the args in place. With it the Claude hook's rewrite would take effect too, but it only emits the POSIX form (wrong for a PowerShell shell) and also compresses Task prompts, so the exclusion stays and the shell-aware plugin is the only wrapper under OpenCode. Remove only with an owner decision on which wrapper should run."
+  },
+  "syncBlockTool": "C:/Users/Zephyrus/.config/opencode/sync-block.py",
+  "instructionBlocks": [
+    "shell-policy",
+    "mcp-directives",
+    "background-workers",
+    "corpus-repo"
+  ],
+  "retiredOverlays": [
+    {
+      "id": "buddy-english",
+      "on": "2026-10-27",
+      "release": "v1.48.24",
+      "by": [
+        "https://github.com/claudioemmanuel/squeez/issues/268",
+        "https://github.com/claudioemmanuel/squeez/pull/281"
+      ],
+      "note": "upstream buddy follows `lang` (lang = en here); squeez setup --host=claude-code now writes English templates. Translation kept in local-fixes/buddy-english for reference."
+    }
+  ]
+}

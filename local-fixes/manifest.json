@@ -44,8 +44,8 @@
         "squeez update",
         "apply.mjs --apply"
       ],
-      "upstream": [],
-      "upstreamPending": "No upstream issue exists and none was filed (filing waits for the owner). Until one is, this entry is the only record of the fix.",
+      "upstream": [{ "ref": "claudioemmanuel/squeez#269", "url": "https://github.com/claudioemmanuel/squeez/issues/269", "covers": "instruction-file read/default/truncate/write race", "state": "open; design review and maintainer labels pending (2026-10-14)" }],
+      "benchmarkUpstream": { "ref": "claudioemmanuel/squeez#272", "url": "https://github.com/claudioemmanuel/squeez/issues/272", "covers": "Windows executable discovery and shell fixture paths in staged.alsoContains", "state": "open; scoped tests/review and maintainer labels pending (2026-10-14)" },
       "retireWhen": "A squeez release's host adapters no longer treat a failed read as an empty file and replace instruction files by rename under a writer lock (check src/hosts/*.rs at the tag, not the changelog). Then run the normal `squeez update` and delete this entry."
     },
     {
@@ -71,8 +71,8 @@
         "squeez update",
         "apply.mjs --apply"
       ],
-      "upstream": [],
-      "upstreamPending": "No upstream issue filed (report squeez-damage-and-fix-20261011-184900Z.md lists it as pending owner approval).",
+      "upstream": [{ "ref": "claudioemmanuel/squeez#270", "url": "https://github.com/claudioemmanuel/squeez/issues/270", "covers": "runtime state relocation outside watched OpenCode config", "state": "open; migration design and maintainer labels pending (2026-10-14)" }],
+      "benchmarkUpstream": { "ref": "claudioemmanuel/squeez#272", "url": "https://github.com/claudioemmanuel/squeez/issues/272", "covers": "Windows executable discovery and shell fixture paths in staged.alsoContains", "state": "open; scoped tests/review and maintainer labels pending (2026-10-14)" },
       "retireWhen": "A squeez release keeps the OpenCode adapter's runtime state outside the OpenCode config directory (check data_dir in src/hosts/opencode.rs at the tag). Then delete this entry."
     }
   ],
@@ -163,8 +163,10 @@
         { "template": "assets/buddy-command.md", "source": "local-fixes/buddy-english/buddy-command.md", "target": "C:/Users/Zephyrus/.claude/commands/buddy.md", "baseSha256": "cdf6ea39de752fc97be436bd569585cfd2d5a173634725c92743d475a0ab6603" }
       ],
       "clobberedBy": ["squeez update", "squeez setup", "squeez setup --host=claude-code", "apply.mjs --apply steps 1-2 (step 3 puts the translation back)"],
-      "upstream": [],
-      "upstreamPending": "Issue and PR are drafted, not filed (the upstream batch files them): Documents/ai/storage/buddy-english-20261013/upstream/ISSUE.md and PR.md; the PR payload is branch fix/buddy-english of Documents/ai/squeez (worktree Documents/ai/squeez-buddy-english-wt). Put both URLs in `upstream` once filed and delete this key.",
+      "upstream": [
+        { "ref": "claudioemmanuel/squeez#268", "url": "https://github.com/claudioemmanuel/squeez/issues/268", "covers": "Portuguese buddy SessionStart instructions despite lang=en", "state": "open; maintainer triage/labels pending (2026-10-14)" },
+        { "ref": "claudioemmanuel/squeez#271", "url": "https://github.com/claudioemmanuel/squeez/pull/271", "covers": "English buddy assets and tests", "state": "open draft; contributor DCO certification required (2026-10-14)" }
+      ],
       "retireWhen": "A squeez release's assets/buddy templates and assets/buddy-command.md are English (or choose the language from a setting that is English here): check hooks/session-start.js at the tag for the injected block, not the changelog. verify then FAILs the 'templates are the base' check on purpose; confirm the installed buddy is English, then delete this entry, its two checks, its repair and local-fixes/buddy-english/, and put the six assets/buddy/lib entries back into releaseAssets."
     }
   ],

@@ -191,6 +191,8 @@ test('actual apply --apply aborts before any binary command when staged markers 
   try {
     for (const name of ['pipeline.mjs', 'apply.mjs']) writeFileSync(join(dir, name), readFileSync(join(p.root, name)));
     const { manifest } = p.loadContext();
+    // the fixture needs carried fixes; a retired entry would (correctly) not block
+    manifest.binaryFixes = manifest.binaryFixes.map(f => ({ ...f, state: 'staged' }));
     manifest.binary = join(dir, 'not-an-executable.bin');
     writeFileSync(manifest.binary, manifest.binaryFixes.flatMap(f => f.markers).join('\n'));
     writeFileSync(join(dir, 'manifest.json'), JSON.stringify(manifest));
@@ -379,8 +381,24 @@ test('buddy-english: nothing is written when the buddy is not installed', () => 
   } finally { rmSync(x.dir, { recursive: true, force: true }); }
 });
 
+test('retired binary fixes neither block squeez update nor get checked', () => {
+  const { manifest } = p.loadContext();
+  const fixes = manifest.binaryFixes.map(f => ({ ...f, state: 'retired' }));
+  const bytes = Buffer.from(fixes.flatMap(f => f.markers).join('\n'));
+  assert.deepEqual(p.binaryPromotionBlockers({ binaryFixes: fixes }, bytes), []);
+  assert.ok(p.BINARY_FIX_STATES.includes('retired'));
+});
+
 test('real manifest: buddy-english carries every translated file in the ledger, off the release-asset list, with the injected block in English', () => {
   const { manifest } = p.loadContext();
+  const retired = (manifest.retiredOverlays ?? []).find(x => x.id === 'buddy-english');
+  if (retired) {
+    // upstream v1.48.24 follows lang (#268/#281): the six lib files are release assets again
+    assert.ok(!manifest.overlays.some(x => x.id === 'buddy-english'), 'retired and active at once');
+    const released = new Set(manifest.releaseAssets.map(a => a.template));
+    for (const n of ['art', 'engine', 'hud', 'squeez', 'state', 'usage']) assert.ok(released.has(`assets/buddy/lib/${n}.js`), n);
+    return;
+  }
   const o = manifest.overlays.find(x => x.id === 'buddy-english');
   assert.ok(o, 'overlay missing');
   assert.equal(o.files.length, 12);
