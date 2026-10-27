@@ -104,8 +104,17 @@ record, `binaryPromotionBlockers` ignores it and no check runs for it. The promo
 `storage/window-c/components/squeez.ps1 -Apply` (swaps exe + manifest, then `apply.mjs --apply`; backups in
 `window-c/squeez/backup/<stamp>`, `-Rollback` restores them). After it, this file's `manifest.json` is the
 retired one; delete the buddy-english translation folder and the section below in the next ledger commit.
-The wrap-guard overlay stays until a hang test against the official binary passes (#261/#262 fixed it in
-the binary, not the plugin).
+Hang test 2026-10-27 (`storage/window-c/squeez/hangtest/hang.mjs`, piped caller, 3 s budget, 15 s
+survivors): the official v1.48.24 exe returns EOF within 4.5 s in all five cases (quick, foreground over
+budget, bare and redirected background survivor, PowerShell sleeper via bash); the 1.48.18 local build
+fails the PowerShell case at 93 s. So the binary fix (#261/#262 via #264) covers what the outside-envelope
+guard was for: the guard is **retire-eligible**. It stays in window C (no untested plugin change
+mid-window); retire it after the window with a live OpenCode check, as its own ledger commit.
+
+New upstream reports with no ledger overlay (the Squeez Stats panel works around them by recounting):
+[#284](https://github.com/claudioemmanuel/squeez/issues/284) session-summary `tokens_saved` counts the
+whole hourly log; [#285](https://github.com/claudioemmanuel/squeez/issues/285) `handler_stats` drops new
+names after 64 and keys on the first word. Tracks: `storage/upstream-tracks`.
 
 ## Binary fixes are live (2026-10-12)
 
